@@ -144,6 +144,13 @@ const tuDienDoraemon = {
 
 // --- 4. ĐỊNH NGHĨA CÁC ĐIỂM CUỐI (API ENDPOINTS) ---
 
+// Route kiểm tra: Dùng để xác nhận server đang chạy và có thể truy cập
+// Truy cập URL gốc của backend (ví dụ: https://doraemon-backend.onrender.com)
+// để xem thông báo này.
+app.get('/', (req, res) => {
+    res.status(200).send('Backend Doraemon đang chạy và hoạt động tốt!');
+});
+
 // Xử lý yêu cầu giải mã từ frontend
 app.post('/giai-ma', async (req, res) => {
     const { userInput, recaptchaToken } = req.body;

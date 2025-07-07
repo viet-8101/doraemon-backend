@@ -12,11 +12,10 @@ const app = express();
 const PORT = 3000;
 
 // Sử dụng CORS để cho phép frontend (chạy trên trình duyệt) có thể gọi tới backend này
-// !!! QUAN TRỌNG: TRONG MÔI TRƯỜNG SẢN PHẨM, HÃY GIỚI HẠN 'origin' CỤ THỂ !!!
-// Thay 'http://localhost:3000' bằng domain của frontend của bạn khi deploy (ví dụ: 'https://your-doraemon-app.com')
-// Hoặc nếu có nhiều domain, dùng mảng: ['http://localhost:3000', 'https://your-another-domain.com']
+// !!! QUAN TRỌNG: ĐÂY LÀ CẤU HÌNH TẠM THỜI ĐỂ DEBUG CORS. KHÔNG NÊN DÙNG TRONG MÔI TRƯỜNG SẢN PHẨM !!!
+// Sau khi debug xong, bạn nên thay lại bằng cấu hình 'origin' cụ thể của frontend.
 app.use(cors({
-    origin: ['http://localhost:3000', 'https://viet-8101.github.io/giai-ma-doraemon']
+    origin: '*' // TẠM THỜI CHO PHÉP TẤT CẢ CÁC NGUỒN GỐC ĐỂ DEBUG LỖI "Failed to fetch"
 }));
 
 // Middleware để server có thể đọc được dữ liệu JSON mà frontend gửi lên

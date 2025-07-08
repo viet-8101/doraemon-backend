@@ -15,7 +15,7 @@ const PORT = 3000;
 // !!! QUAN TRỌNG: ĐÂY LÀ CẤU HÌNH TẠM THỜI ĐỂ DEBUG CORS. KHÔNG NÊN DÙNG TRONG MÔI TRƯỜNG SẢN PHẨM !!!
 // Sau khi debug xong, bạn nên thay lại bằng cấu hình 'origin' cụ thể của frontend.
 app.use(cors({
-    origin: '*' // TẠM THỜI CHO PHÉP TẤT CẢ CÁC NGUỒN GỐC ĐỂ DEBUG LỖI "Failed to fetch"
+    origin: 'https://viet-8101.github.io/giai-ma-doraemon' // Đặt lại URL frontend cụ thể của bạn
 }));
 
 // Middleware để server có thể đọc được dữ liệu JSON mà frontend gửi lên

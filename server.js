@@ -9,13 +9,14 @@ require('dotenv').config(); // Tải biến môi trường từ file .env
 
 // --- 2. KHỞI TẠO ỨNG DỤNG VÀ CẤU HÌNH ---
 const app = express();
-const PORT = 3000;
+// Sử dụng cổng từ biến môi trường PORT của Render, nếu không có thì dùng 3000
+const PORT = process.env.PORT || 3000; 
 
 // Sử dụng CORS để cho phép frontend (chạy trên trình duyệt) có thể gọi tới backend này
 // !!! QUAN TRỌNG: ĐÂY LÀ CẤU HÌNH TẠM THỜI ĐỂ DEBUG CORS. KHÔNG NÊN DÙNG TRONG MÔI TRƯỜNG SẢN PHẨM !!!
 // Sau khi debug xong, bạn nên thay lại bằng cấu hình 'origin' cụ thể của frontend.
 app.use(cors({
-    origin: 'https://viet-8101.github.io/giai-ma-doraemon' // Đặt lại URL frontend cụ thể của bạn
+    origin: '*' // TẠM THỜI CHO PHÉP TẤT CẢ CÁC NGUỒN GỐC ĐỂ DEBUG LỖI "Failed to fetch"
 }));
 
 // Middleware để server có thể đọc được dữ liệu JSON mà frontend gửi lên
@@ -154,6 +155,11 @@ app.get('/', (req, res) => {
 app.post('/giai-ma', async (req, res) => {
     const { userInput, recaptchaToken } = req.body;
 
+    // Debugging: Ghi log khi yêu cầu đến endpoint /giai-ma
+    console.log(`[${new Date().toISOString()}] Yêu cầu POST đến /giai-ma nhận được.`);
+    console.log('User Input:', userInput);
+    console.log('reCAPTCHA Token:', recaptchaToken ? 'Có' : 'Không');
+
     // Kiểm tra dữ liệu đầu vào
     if (!userInput || !recaptchaToken) {
         return res.status(400).json({ error: 'Thiếu dữ liệu đầu vào hoặc reCAPTCHA token.' });
@@ -163,10 +169,9 @@ app.post('/giai-ma', async (req, res) => {
         // --- 4.1. XÁC THỰC reCAPTCHA TOKEN ---
         const recaptchaVerificationUrl = `https://www.google.com/recaptcha/api/siteverify`;
         
-        // Debugging: Kiểm tra kiểu của fetch trước khi gọi (sẽ là function nếu Node.js >= 18)
-        console.log('Type of fetch before call:', typeof fetch); 
-
-        const verificationResponse = await fetch(recaptchaVerificationUrl, { // Sử dụng 'fetch' gốc
+        // Sử dụng 'fetch' gốc của Node.js (phiên bản 18+).
+        // Đảm bảo bạn đã xóa 'node-fetch' khỏi package.json.
+        const verificationResponse = await fetch(recaptchaVerificationUrl, { 
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: `secret=${RECAPTCHA_SECRET_KEY}&response=${recaptchaToken}`
@@ -212,5 +217,21 @@ app.post('/giai-ma', async (req, res) => {
 
 // --- 5. KHỞI CHẠY SERVER ---
 app.listen(PORT, () => {
-    console.log(`🚀 Server đang chạy tại http://localhost:${PORT}`);
+    console.log(`🚀 Server đang chạy tại http://localhost:${PORT} (được Render map tới cổng công khai)`);
+});
+
+// Xử lý lỗi không được bắt (unhandled exceptions)
+process.on('uncaughtException', (err) => {
+    console.error('FATAL ERROR: Uncaught Exception! Server is crashing...');
+    console.error(err.stack);
+    // Đây là lỗi nghiêm trọng, thường cần thoát ứng dụng
+    process.exit(1); 
+});
+
+// Xử lý lỗi promise không được bắt (unhandled promise rejections)
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('FATAL ERROR: Unhandled Promise Rejection! Server might crash...');
+    console.error(reason);
+    // Log lý do và promise bị từ chối
+    // Trong môi trường sản phẩm, bạn có thể muốn thoát ứng dụng sau một thời gian ngắn
 });

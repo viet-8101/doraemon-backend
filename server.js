@@ -2,43 +2,37 @@
 
 // --- 1. IMPORT CÁC THƯ VIỆN CẦN THIẾT ---
 const express = require('express');
-// const nodeFetch = require('node-fetch'); // Đã bỏ import node-fetch, sẽ dùng fetch gốc của Node.js
 const cors = require('cors');
 const path = require('path');
 require('dotenv').config(); // Tải biến môi trường từ file .env
 
 // --- 2. KHỞI TẠO ỨNG DỤNG VÀ CẤU HÌNH ---
 const app = express();
-// Sử dụng cổng từ biến môi trường PORT của Render, nếu không có thì dùng 3000
-const PORT = process.env.PORT || 3000; 
+const PORT = 3000;
 
-// Sử dụng CORS để cho phép frontend (chạy trên trình duyệt) có thể gọi tới backend này
-// !!! QUAN TRỌNG: ĐÂY LÀ CẤU HÌNH TẠM THỜI ĐỂ DEBUG CORS. KHÔNG NÊN DÙNG TRONG MÔI TRƯỜNG SẢN PHẨM !!!
-// Sau khi debug xong, bạn nên thay lại bằng cấu hình 'origin' cụ thể của frontend.
 app.use(cors({
-    origin: '*' // TẠM THỜI CHO PHÉP TẤT CẢ CÁC NGUỒN GỐC ĐỂ DEBUG LỖI "Failed to fetch"
+    origin: 'https://viet-8101.github.io/giai-ma-doraemon' // Đặt lại URL frontend cụ thể của bạn
 }));
-
-// Middleware để server có thể đọc được dữ liệu JSON mà frontend gửi lên
 app.use(express.json());
-
-// Phục vụ các tệp tĩnh (HTML, CSS, JS) từ thư mục 'public'
-// Đảm bảo thư mục 'public' chỉ chứa các tệp mà bạn muốn công khai
 app.use(express.static(path.join(__dirname, 'public')));
-
+// ADDED: Trust the X-Forwarded-For header from a reverse proxy (like Render, Heroku)
+app.set('trust proxy', 1);
 
 // --- 3. LƯU TRỮ CÁC GIÁ TRỊ BÍ MẬT VÀ DỮ LIỆU ---
-
-// Khóa Bí Mật (Secret Key) của reCAPTCHA được đọc từ biến môi trường
-// Đảm bảo bạn đã tạo file .env và thêm dòng RECAPTCHA_SECRET_KEY=YOUR_SECRET_KEY vào đó
 const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
 if (!RECAPTCHA_SECRET_KEY) {
     console.error('Lỗi: RECAPTCHA_SECRET_KEY chưa được đặt trong biến môi trường!');
-    // Thoát ứng dụng nếu khóa không được cấu hình, để tránh chạy mà không có bảo mật
     process.exit(1); 
 }
 
-// Từ điển Doraemon (giờ đã nằm an toàn trên server)
+// ADDED: IPInfo API Token from user request
+const IPINFO_TOKEN = '97322fdbb8213c';
+
+// ADDED: Simple in-memory blocklists for demonstration
+const BANNED_IPS = new Set(['123.45.67.89']);
+const BANNED_FINGERPRINTS = new Set(['example_banned_fingerprint']);
+
+// Từ điển Doraemon (giữ nguyên)
 const tuDienDoraemon = {
     "cái loa biết đi": "Jaian",
     "thánh chảnh": "Suneo",
@@ -141,37 +135,67 @@ const tuDienDoraemon = {
     "viên đạn của đại bác không khí": "Moto"
 };
 
+// --- 4. ADDED: SECURITY MIDDLEWARE ---
+const securityCheck = async (req, res, next) => {
+    // MODIFIED: Get visitorId from request body
+    const { visitorId } = req.body;
+    // Get client IP address, trusting the 'x-forwarded-for' header if behind a proxy
+    const ip = req.ip;
 
-// --- 4. ĐỊNH NGHĨA CÁC ĐIỂM CUỐI (API ENDPOINTS) ---
+    // Check blocklists first
+    if (BANNED_IPS.has(ip) || (visitorId && BANNED_FINGERPRINTS.has(visitorId))) {
+        console.warn(`[BLOCK] Denied access for banned IP: ${ip} or Fingerprint: ${visitorId}`);
+        return res.status(403).json({ error: 'Truy cập bị từ chối. Bạn đã bị chặn.' });
+    }
 
-// Route kiểm tra: Dùng để xác nhận server đang chạy và có thể truy cập
-// Truy cập URL gốc của backend (ví dụ: https://doraemon-backend.onrender.com)
-// để xem thông báo này.
+    try {
+        const response = await fetch(`https://ipinfo.io/${ip}?token=${IPINFO_TOKEN}`);
+        if (!response.ok) {
+            throw new Error(`IPInfo API request failed with status ${response.status}`);
+        }
+        const ipData = await response.json();
+
+        // Log required information to the console
+        console.log(`[IPInfo] Visitor ID: ${visitorId || 'N/A'}`);
+        console.log(`  - IP: ${ipData.ip}`);
+        console.log(`  - Country: ${ipData.country}`);
+        console.log(`  - Region: ${ipData.region}`);
+        console.log(`  - Org: ${ipData.org}`);
+        console.log(`  - Hostname: ${ipData.hostname || 'N/A'}`);
+        
+        // Example of issuing a warning based on country
+        if (ipData.country !== 'VN') {
+            console.warn(`[Suspicious Access] Request from outside Vietnam. Country: ${ipData.country}`);
+        }
+
+        next(); // Continue to the next middleware/route handler
+    } catch (error) {
+        console.error('[Security Check Error]', error.message);
+        // In case of error, we'll let the request pass but log the issue.
+        // For a stricter policy, you could return an error response here.
+        next();
+    }
+};
+
+
+// --- 5. ĐỊNH NGHĨA CÁC ĐIỂM CUỐI (API ENDPOINTS) ---
 app.get('/', (req, res) => {
     res.status(200).send('Backend Doraemon đang chạy và hoạt động tốt!');
 });
 
-// Xử lý yêu cầu giải mã từ frontend
-app.post('/giai-ma', async (req, res) => {
+// MODIFIED: Added the securityCheck middleware to the /giai-ma route
+app.post('/giai-ma', securityCheck, async (req, res) => {
+    // MODIFIED: visitorId is now also in the request body, but handled by middleware.
     const { userInput, recaptchaToken } = req.body;
 
-    // Debugging: Ghi log khi yêu cầu đến endpoint /giai-ma
-    console.log(`[${new Date().toISOString()}] Yêu cầu POST đến /giai-ma nhận được.`);
-    console.log('User Input:', userInput);
-    console.log('reCAPTCHA Token:', recaptchaToken ? 'Có' : 'Không');
-
-    // Kiểm tra dữ liệu đầu vào
     if (!userInput || !recaptchaToken) {
         return res.status(400).json({ error: 'Thiếu dữ liệu đầu vào hoặc reCAPTCHA token.' });
     }
 
     try {
-        // --- 4.1. XÁC THỰC reCAPTCHA TOKEN ---
         const recaptchaVerificationUrl = `https://www.google.com/recaptcha/api/siteverify`;
         
-        // Sử dụng 'fetch' gốc của Node.js (phiên bản 18+).
-        // Đảm bảo bạn đã xóa 'node-fetch' khỏi package.json.
-        const verificationResponse = await fetch(recaptchaVerificationUrl, { 
+        const verificationResponse = await fetch(recaptchaVerificationUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: `secret=${RECAPTCHA_SECRET_KEY}&response=${recaptchaToken}`
@@ -179,22 +203,17 @@ app.post('/giai-ma', async (req, res) => {
 
         const recaptchaData = await verificationResponse.json();
 
-        // Nếu 'success' là false, có nghĩa là xác thực thất bại
         if (!recaptchaData.success) {
             console.warn('Xác thực reCAPTCHA thất bại:', recaptchaData['error-codes']);
             return res.status(401).json({ error: 'Xác thực không thành công. Có thể bạn là bot!' });
         }
 
-        // Nếu xác thực thành công, tiến hành giải mã
         console.log('✅ Xác thực reCAPTCHA thành công!');
         let text = userInput.trim().toLowerCase();
         
-        // Sắp xếp các từ khóa theo độ dài giảm dần để đảm bảo từ khóa dài hơn được thay thế trước
-        // Ví dụ: "con cáo" sẽ được thay trước "cáo" để tránh lỗi thay thế
         const entries = Object.entries(tuDienDoraemon).sort((a, b) => b[0].length - a[0].length);
         let replaced = false;
         for (const [k, v] of entries) {
-            // Tạo RegExp an toàn: Escape các ký tự đặc biệt trong từ khóa từ điển
             const re = new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
             if (text.match(re)) {
                 text = text.replace(re, v);
@@ -204,34 +223,16 @@ app.post('/giai-ma', async (req, res) => {
         
         const ketQua = replaced ? text : "Không tìm thấy từ khóa phù hợp trong từ điển.";
 
-        // Trả kết quả giải mã về cho frontend
         res.json({ success: true, ketQua: ketQua });
 
     } catch (error) {
-        // Bắt các lỗi khác có thể xảy ra trên server
         console.error('Lỗi server:', error);
         res.status(500).json({ error: 'Đã có lỗi xảy ra ở phía máy chủ.' });
     }
 });
 
 
-// --- 5. KHỞI CHẠY SERVER ---
+// --- 6. KHỞI CHẠY SERVER ---
 app.listen(PORT, () => {
-    console.log(`🚀 Server đang chạy tại http://localhost:${PORT} (được Render map tới cổng công khai)`);
-});
-
-// Xử lý lỗi không được bắt (unhandled exceptions)
-process.on('uncaughtException', (err) => {
-    console.error('FATAL ERROR: Uncaught Exception! Server is crashing...');
-    console.error(err.stack);
-    // Đây là lỗi nghiêm trọng, thường cần thoát ứng dụng
-    process.exit(1); 
-});
-
-// Xử lý lỗi promise không được bắt (unhandled promise rejections)
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('FATAL ERROR: Unhandled Promise Rejection! Server might crash...');
-    console.error(reason);
-    // Log lý do và promise bị từ chối
-    // Trong môi trường sản phẩm, bạn có thể muốn thoát ứng dụng sau một thời gian ngắn
+    console.log(`🚀 Server đang chạy tại http://localhost:${PORT}`);
 });

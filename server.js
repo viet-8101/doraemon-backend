@@ -11,9 +11,8 @@ const app = express();
 const PORT = 3000;
 
 // Cấu hình CORS để cho phép frontend truy cập
-app.use(cors({
-    origin: 'https://viet-8101.github.io/giai-ma-doraemon' // URL frontend của bạn
-}));
+app.use(cors()); // TẠM THỜI: Cho phép tất cả các origin. CHỈ DÙNG ĐỂ DEBUG!
+                 // KHÔNG NÊN DÙNG CÁI NÀY TRONG MÔI TRƯỜNG THỰC TẾ (PRODUCTION) vì lý do bảo mật.
 
 // Middleware để đọc dữ liệu JSON và tin tưởng proxy
 app.use(express.json());

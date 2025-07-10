@@ -1,4 +1,4 @@
-// server.js - BỘ NÃO AN TOÀN CỦA ỨNG DỤNG
+// server.js - BỘ NÃO AN TOÀN CỦA ỨNG DỤNG (PHIÊN BẢN ĐẦY ĐỦ + PHÁT HIỆN VPN)
 
 // --- 1. IMPORT CÁC THƯ VIỆN CẦN THIẾT ---
 const express = require('express');
@@ -10,29 +10,39 @@ require('dotenv').config(); // Tải biến môi trường từ file .env
 const app = express();
 const PORT = 3000;
 
+// Cấu hình CORS để cho phép frontend truy cập
 app.use(cors({
-    origin: 'https://viet-8101.github.io/giai-ma-doraemon' // Đặt lại URL frontend cụ thể của bạn
+    origin: 'https://viet-8101.github.io/giai-ma-doraemon' // URL frontend của bạn
 }));
+
+// Middleware để đọc dữ liệu JSON và tin tưởng proxy
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
-// ADDED: Trust the X-Forwarded-For header from a reverse proxy (like Render, Heroku)
 app.set('trust proxy', 1);
 
-// --- 3. LƯU TRỮ CÁC GIÁ TRỊ BÍ MẬT VÀ DỮ LIỆU ---
+// --- 3. CẤU HÌNH BẢO MẬT VÀ DỮ LIỆU ---
+
+// -- Biến môi trường và các khóa bí mật --
 const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
+// API Key cho dịch vụ kiểm tra IP (thay thế IPInfo)
+const IPQS_API_KEY = process.env.IPQS_API_KEY || 'YOUR_IPQUALITYSCORE_API_KEY'; // Thay bằng key của bạn
+
 if (!RECAPTCHA_SECRET_KEY) {
     console.error('Lỗi: RECAPTCHA_SECRET_KEY chưa được đặt trong biến môi trường!');
-    process.exit(1); 
+    process.exit(1);
+}
+if (IPQS_API_KEY === 'YOUR_IPQUALITYSCORE_API_KEY') {
+    console.warn('Cảnh báo: Bạn đang sử dụng API Key mặc định của IPQualityScore. Hãy đăng ký và thay thế bằng key của riêng bạn trong file .env để đảm bảo hoạt động ổn định.');
 }
 
-// ADDED: IPInfo API Token from user request
-const IPINFO_TOKEN = '97322fdbb8213c';
+// -- Danh sách đen (Blocklists) lưu trữ trong bộ nhớ --
+const BANNED_IPS = new Set();
+const BANNED_FINGERPRINTS = new Set();
 
-// ADDED: Simple in-memory blocklists for demonstration
-const BANNED_IPS = new Set(['123.45.67.89']);
-const BANNED_FINGERPRINTS = new Set(['example_banned_fingerprint']);
+// -- Cơ chế theo dõi tấn công reCAPTCHA --
+const FAILED_ATTEMPTS_THRESHOLD = 5; // Chặn sau 5 lần thất bại
+const failedAttempts = new Map(); // Lưu trữ: IP => { count, visitorId }
 
-// Từ điển Doraemon (giữ nguyên)
+// -- Dữ liệu từ điển Doraemon (đầy đủ) --
 const tuDienDoraemon = {
     "cái loa biết đi": "Jaian",
     "thánh chảnh": "Suneo",
@@ -64,8 +74,8 @@ const tuDienDoraemon = {
     "bậc thầy năn nỉ": "Nobita",
     "thiên tài thắt dây": "Nobita",
     "tay vua súng": "Nobita",
-    "xe buýt": "Nobita", "xe bus":
-    "Nobita", "mèo máy": "Doraemon",
+    "xe buýt": "Nobita", "xe bus": "Nobita",
+    "mèo máy": "Doraemon",
     "mỏ nhọn": "Suneo",
     "lồi rốn": "Jaian",
     "yên ắng": "nhà Shizuka",
@@ -135,58 +145,95 @@ const tuDienDoraemon = {
     "viên đạn của đại bác không khí": "Moto"
 };
 
-// --- 4. ADDED: SECURITY MIDDLEWARE ---
-const securityCheck = async (req, res, next) => {
-    // MODIFIED: Get visitorId from request body
-    const { visitorId } = req.body;
-    // Get client IP address, trusting the 'x-forwarded-for' header if behind a proxy
-    const ip = req.ip;
 
-    // Check blocklists first
-    if (BANNED_IPS.has(ip) || (visitorId && BANNED_FINGERPRINTS.has(visitorId))) {
-        console.warn(`[BLOCK] Denied access for banned IP: ${ip} or Fingerprint: ${visitorId}`);
-        return res.status(403).json({ error: 'Truy cập bị từ chối. Bạn đã bị chặn.' });
+// --- 4. HÀM HỖ TRỢ BẢO MẬT ---
+
+/**
+ * Ghi nhận một lần xác thực reCAPTCHA thất bại.
+ * Nếu vượt ngưỡng, tự động cấm IP và Fingerprint.
+ */
+function handleFailedAttempt(ip, visitorId) {
+    let attempts = failedAttempts.get(ip) || { count: 0, visitorId: visitorId };
+    attempts.count++;
+    failedAttempts.set(ip, attempts);
+
+    console.warn(`[ATTACK DETECTED] IP: ${ip} failed reCAPTCHA. Attempt: ${attempts.count}`);
+
+    if (attempts.count >= FAILED_ATTEMPTS_THRESHOLD) {
+        BANNED_IPS.add(ip);
+        if (visitorId) {
+            BANNED_FINGERPRINTS.add(visitorId);
+        }
+        console.error(`[AUTO-BAN] IP: ${ip} and VisitorID: ${visitorId} have been permanently banned.`);
+        failedAttempts.delete(ip); // Xóa khỏi danh sách theo dõi sau khi đã cấm
     }
+}
 
+/**
+ * Sử dụng IPQualityScore để kiểm tra IP có phải là VPN/Proxy hoặc có dấu hiệu gian lận không.
+ */
+async function checkIpWithIPQS(ip) {
     try {
-        const response = await fetch(`https://ipinfo.io/${ip}?token=${IPINFO_TOKEN}`);
+        const url = `https://www.ipqualityscore.com/api/json/ip/${IPQS_API_KEY}/${ip}`;
+        const response = await fetch(url);
         if (!response.ok) {
-            throw new Error(`IPInfo API request failed with status ${response.status}`);
+            console.error(`IPQS API request failed with status ${response.status}`);
+            return { valid: true }; // Mặc định cho qua nếu API lỗi để tránh chặn nhầm
         }
-        const ipData = await response.json();
+        const data = await response.json();
 
-        // Log required information to the console
-        console.log(`[IPInfo] Visitor ID: ${visitorId || 'N/A'}`);
-        console.log(`  - IP: ${ipData.ip}`);
-        console.log(`  - Country: ${ipData.country}`);
-        console.log(`  - Region: ${ipData.region}`);
-        console.log(`  - Org: ${ipData.org}`);
-        console.log(`  - Hostname: ${ipData.hostname || 'N/A'}`);
+        // Chặn nếu là VPN, Proxy, hoặc điểm gian lận (fraud_score) cao
+        if (data.vpn || data.proxy || data.fraud_score > 85) {
+            console.warn(`[SECURITY BLOCK] IP: ${ip} flagged. VPN: ${data.vpn}, Proxy: ${data.proxy}, Fraud Score: ${data.fraud_score}`);
+            return {
+                valid: false,
+                reason: `Kết nối của bạn bị chặn vì lý do bảo mật (VPN/Proxy).`
+            };
+        }
         
-        // Example of issuing a warning based on country
-        if (ipData.country !== 'VN') {
-            console.warn(`[Suspicious Access] Request from outside Vietnam. Country: ${ipData.country}`);
-        }
+        console.log(`[IP Check] IP: ${ip} passed security check. Country: ${data.country_code}, ISP: ${data.ISP}`);
+        return { valid: true };
 
-        next(); // Continue to the next middleware/route handler
     } catch (error) {
-        console.error('[Security Check Error]', error.message);
-        // In case of error, we'll let the request pass but log the issue.
-        // For a stricter policy, you could return an error response here.
-        next();
+        console.error('Lỗi khi gọi IPQualityScore API:', error.message);
+        return { valid: true }; // Cho qua nếu có lỗi xảy ra
     }
+}
+
+
+// --- 5. MIDDLEWARE BẢO MẬT CHÍNH ---
+
+const securityMiddleware = async (req, res, next) => {
+    const ip = req.ip;
+    const { visitorId } = req.body;
+
+    // Bước 1: Kiểm tra danh sách đen vĩnh viễn
+    if (BANNED_IPS.has(ip) || (visitorId && BANNED_FINGERPRINTS.has(visitorId))) {
+        console.warn(`[BLOCK] Denied access for permanently banned IP: ${ip} or Fingerprint: ${visitorId}`);
+        return res.status(403).json({ error: 'Truy cập của bạn đã bị chặn vĩnh viễn.' });
+    }
+
+    // Bước 2: Kiểm tra IP bằng dịch vụ phát hiện VPN/Proxy
+    const ipCheckResult = await checkIpWithIPQS(ip);
+    if (!ipCheckResult.valid) {
+        return res.status(403).json({ error: ipCheckResult.reason });
+    }
+
+    // Nếu mọi thứ ổn, tiếp tục xử lý yêu cầu
+    next();
 };
 
 
-// --- 5. ĐỊNH NGHĨA CÁC ĐIỂM CUỐI (API ENDPOINTS) ---
+// --- 6. ĐỊNH NGHĨA CÁC ĐIỂM CUỐI (API ENDPOINTS) ---
+
 app.get('/', (req, res) => {
     res.status(200).send('Backend Doraemon đang chạy và hoạt động tốt!');
 });
 
-// MODIFIED: Added the securityCheck middleware to the /giai-ma route
-app.post('/giai-ma', securityCheck, async (req, res) => {
-    // MODIFIED: visitorId is now also in the request body, but handled by middleware.
-    const { userInput, recaptchaToken } = req.body;
+// Áp dụng Middleware bảo mật cho endpoint giải mã
+app.post('/giai-ma', securityMiddleware, async (req, res) => {
+    const { userInput, recaptchaToken, visitorId } = req.body;
+    const ip = req.ip;
 
     if (!userInput || !recaptchaToken) {
         return res.status(400).json({ error: 'Thiếu dữ liệu đầu vào hoặc reCAPTCHA token.' });
@@ -194,23 +241,28 @@ app.post('/giai-ma', securityCheck, async (req, res) => {
 
     try {
         const recaptchaVerificationUrl = `https://www.google.com/recaptcha/api/siteverify`;
-        
         const verificationResponse = await fetch(recaptchaVerificationUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: `secret=${RECAPTCHA_SECRET_KEY}&response=${recaptchaToken}`
         });
-
         const recaptchaData = await verificationResponse.json();
 
+        // Nếu reCAPTCHA thất bại, ghi nhận và có thể cấm
         if (!recaptchaData.success) {
-            console.warn('Xác thực reCAPTCHA thất bại:', recaptchaData['error-codes']);
-            return res.status(401).json({ error: 'Xác thực không thành công. Có thể bạn là bot!' });
+            handleFailedAttempt(ip, visitorId);
+            return res.status(401).json({ error: 'Xác thực không thành công. Vui lòng thử lại.' });
+        }
+        
+        // Nếu thành công, xóa bộ đếm lỗi (nếu có) để tránh cấm nhầm
+        if (failedAttempts.has(ip)) {
+            failedAttempts.delete(ip);
         }
 
-        console.log('✅ Xác thực reCAPTCHA thành công!');
+        console.log(`[SUCCESS] reCAPTCHA valid for IP: ${ip}`);
         let text = userInput.trim().toLowerCase();
         
+        // Logic giải mã
         const entries = Object.entries(tuDienDoraemon).sort((a, b) => b[0].length - a[0].length);
         let replaced = false;
         for (const [k, v] of entries) {
@@ -220,7 +272,6 @@ app.post('/giai-ma', securityCheck, async (req, res) => {
                 replaced = true;
             }
         }
-        
         const ketQua = replaced ? text : "Không tìm thấy từ khóa phù hợp trong từ điển.";
 
         res.json({ success: true, ketQua: ketQua });
@@ -231,8 +282,7 @@ app.post('/giai-ma', securityCheck, async (req, res) => {
     }
 });
 
-
-// --- 6. KHỞI CHẠY SERVER ---
+// --- 7. KHỞI CHẠY SERVER ---
 app.listen(PORT, () => {
     console.log(`🚀 Server đang chạy tại http://localhost:${PORT}`);
 });

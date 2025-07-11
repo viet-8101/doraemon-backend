@@ -1,20 +1,20 @@
-// server.js - BỘ NÃO AN TOÀN CỦA ỨNG DỤNG (PHIÊN BẢN ĐẦY ĐỦ + PHÁT HIỆN VPN)
+// server.js - BỘ NÃO AN TOÀN CỦA ỨNG DỤNG (PHIÊN BẢN SỬA LỖI)
 
 // --- 1. IMPORT CÁC THƯ VIỆN CẦN THIẾT ---
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-require('dotenv').config(); // Tải biến môi trường từ file .env
+require('dotenv').config();
 
 // --- 2. KHỞI TẠO ỨNG DỤNG VÀ CẤU HÌNH ---
 const app = express();
 const PORT = 3000;
 
-// Cấu hình CORS để cho phép frontend truy cập
-app.use(cors()); // TẠM THỜI: Cho phép tất cả các origin. CHỈ DÙNG ĐỂ DEBUG!
-                 // KHÔNG NÊN DÙNG CÁI NÀY TRONG MÔI TRƯỜNG THỰC TẾ (PRODUCTION) vì lý do bảo mật.
+// FIX: Cấu hình CORS đúng và an toàn, chỉ cho phép frontend của bạn truy cập
+app.use(cors({
+    origin: 'https://viet-8101.github.io'
+}));
 
-// Middleware để đọc dữ liệu JSON và tin tưởng proxy
 app.use(express.json());
 app.set('trust proxy', 1);
 
@@ -22,24 +22,24 @@ app.set('trust proxy', 1);
 
 // -- Biến môi trường và các khóa bí mật --
 const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
-// API Key cho dịch vụ kiểm tra IP (thay thế IPInfo)
-const IPQS_API_KEY = process.env.IPQS_API_KEY || 'YOUR_IPQUALITYSCORE_API_KEY'; // Thay bằng key của bạn
+const IPQS_API_KEY = process.env.IPQS_API_KEY || 'YOUR_IPQUALITYSCORE_API_KEY';
 
 if (!RECAPTCHA_SECRET_KEY) {
     console.error('Lỗi: RECAPTCHA_SECRET_KEY chưa được đặt trong biến môi trường!');
     process.exit(1);
 }
 if (IPQS_API_KEY === 'YOUR_IPQUALITYSCORE_API_KEY') {
-    console.warn('Cảnh báo: Bạn đang sử dụng API Key mặc định của IPQualityScore. Hãy đăng ký và thay thế bằng key của riêng bạn trong file .env để đảm bảo hoạt động ổn định.');
+    console.warn('Cảnh báo: Bạn đang sử dụng API Key mặc định của IPQualityScore.');
 }
 
-// -- Danh sách đen (Blocklists) lưu trữ trong bộ nhớ --
-const BANNED_IPS = new Set();
-const BANNED_FINGERPRINTS = new Set();
+// -- Danh sách cấm tạm thời --
+const BANNED_IPS = new Map();
+const BANNED_FINGERPRINTS = new Set(); // Giữ lại cấm vĩnh viễn cho fingerprint nếu cần
+const BAN_DURATION_MS = 12 * 60 * 60 * 1000; // Cấm IP trong 12 giờ
 
-// -- Cơ chế theo dõi tấn công reCAPTCHA --
-const FAILED_ATTEMPTS_THRESHOLD = 5; // Chặn sau 5 lần thất bại
-const failedAttempts = new Map(); // Lưu trữ: IP => { count, visitorId }
+// -- Cơ chế theo dõi lỗi reCAPTCHA --
+const FAILED_ATTEMPTS_THRESHOLD = 5;
+const failedAttempts = new Map();
 
 // -- Dữ liệu từ điển Doraemon (đầy đủ) --
 const tuDienDoraemon = {
@@ -149,53 +149,69 @@ const tuDienDoraemon = {
 
 /**
  * Ghi nhận một lần xác thực reCAPTCHA thất bại.
- * Nếu vượt ngưỡng, tự động cấm IP và Fingerprint.
+ * Nếu vượt ngưỡng, cấm IP tạm thời và cấm fingerprint vĩnh viễn.
  */
 function handleFailedAttempt(ip, visitorId) {
-    let attempts = failedAttempts.get(ip) || { count: 0, visitorId: visitorId };
+    let attempts = failedAttempts.get(ip) || { count: 0 };
     attempts.count++;
     failedAttempts.set(ip, attempts);
 
-    console.warn(`[ATTACK DETECTED] IP: ${ip} failed reCAPTCHA. Attempt: ${attempts.count}`);
+    console.warn(`[RECAPTCHA FAIL] IP: ${ip} failed reCAPTCHA. Attempt: ${attempts.count}`);
 
     if (attempts.count >= FAILED_ATTEMPTS_THRESHOLD) {
-        BANNED_IPS.add(ip);
+        const banExpiresAt = Date.now() + BAN_DURATION_MS;
+        BANNED_IPS.set(ip, banExpiresAt);
         if (visitorId) {
-            BANNED_FINGERPRINTS.add(visitorId);
+            BANNED_FINGERPRINTS.add(visitorId); // Cấm fingerprint của bot
         }
-        console.error(`[AUTO-BAN] IP: ${ip} and VisitorID: ${visitorId} have been permanently banned.`);
-        failedAttempts.delete(ip); // Xóa khỏi danh sách theo dõi sau khi đã cấm
+        const banExpiresDate = new Date(banExpiresAt).toLocaleString('vi-VN');
+        console.error(`[TEMP-BAN] IP: ${ip} has been temporarily banned. VisitorID: ${visitorId} banned. Expires at: ${banExpiresDate}`);
+        failedAttempts.delete(ip);
     }
 }
 
 /**
- * Sử dụng IPQualityScore để kiểm tra IP có phải là VPN/Proxy hoặc có dấu hiệu gian lận không.
+ * FIX: Kiểm tra IP với các tham số giảm lỗi sai.
  */
-async function checkIpWithIPQS(ip) {
+async function checkIpRealtime(ip) {
     try {
-        const url = `https://www.ipqualityscore.com/api/json/ip/${IPQS_API_KEY}/${ip}`;
+        // Thêm tham số để giảm sai sót: strictness=0 (ít nghiêm ngặt), allow_public_access_points=true (cho phép wifi công cộng)
+        const url = `https://www.ipqualityscore.com/api/json/ip/${IPQS_API_KEY}/${ip}?strictness=0&allow_public_access_points=true`;
         const response = await fetch(url);
         if (!response.ok) {
             console.error(`IPQS API request failed with status ${response.status}`);
-            return { valid: true }; // Mặc định cho qua nếu API lỗi để tránh chặn nhầm
+            return { valid: true }; // Cho qua nếu API lỗi
         }
         const data = await response.json();
 
-        // Chặn nếu là VPN, Proxy, hoặc điểm gian lận (fraud_score) cao
-        if (data.vpn || data.proxy || data.fraud_score > 85) {
-            console.warn(`[SECURITY BLOCK] IP: ${ip} flagged. VPN: ${data.vpn}, Proxy: ${data.proxy}, Fraud Score: ${data.fraud_score}`);
+        // Thêm log chi tiết để debug
+        if (data.vpn || data.proxy) {
+            console.warn(`[SECURITY FLAG] IP: ${ip} flagged. Full response:`, JSON.stringify(data));
+        }
+
+        // Chặn nếu là VPN hoặc Proxy
+        if (data.vpn || data.proxy) {
             return {
                 valid: false,
-                reason: `Kết nối của bạn bị chặn vì lý do bảo mật (VPN/Proxy).`
+                reason: `Kết nối của bạn bị chặn vì có dấu hiệu sử dụng VPN/Proxy.`
             };
         }
         
-        console.log(`[IP Check] IP: ${ip} passed security check. Country: ${data.country_code}, ISP: ${data.ISP}`);
+        // Chặn nếu không phải từ Việt Nam
+        if (data.country_code !== 'VN') {
+            console.warn(`[SECURITY BLOCK] IP: ${ip} is from a disallowed country: ${data.country_code}.`);
+            return {
+                valid: false,
+                reason: `Dịch vụ chỉ dành cho người dùng tại Việt Nam.`
+            };
+        }
+        
+        console.log(`[IP Check] IP: ${ip} passed initial checks. Country: ${data.country_code}`);
         return { valid: true };
 
     } catch (error) {
         console.error('Lỗi khi gọi IPQualityScore API:', error.message);
-        return { valid: true }; // Cho qua nếu có lỗi xảy ra
+        return { valid: true };
     }
 }
 
@@ -206,19 +222,29 @@ const securityMiddleware = async (req, res, next) => {
     const ip = req.ip;
     const { visitorId } = req.body;
 
-    // Bước 1: Kiểm tra danh sách đen vĩnh viễn
-    if (BANNED_IPS.has(ip) || (visitorId && BANNED_FINGERPRINTS.has(visitorId))) {
-        console.warn(`[BLOCK] Denied access for permanently banned IP: ${ip} or Fingerprint: ${visitorId}`);
+    // Bước 1: Kiểm tra fingerprint có bị cấm vĩnh viễn không
+    if (visitorId && BANNED_FINGERPRINTS.has(visitorId)) {
         return res.status(403).json({ error: 'Truy cập của bạn đã bị chặn vĩnh viễn.' });
     }
 
-    // Bước 2: Kiểm tra IP bằng dịch vụ phát hiện VPN/Proxy
-    const ipCheckResult = await checkIpWithIPQS(ip);
+    // Bước 2: Kiểm tra IP có bị cấm tạm thời không
+    const banExpiresAt = BANNED_IPS.get(ip);
+    if (banExpiresAt) {
+        if (Date.now() < banExpiresAt) {
+            const banExpiresDate = new Date(banExpiresAt).toLocaleString('vi-VN');
+            return res.status(403).json({ error: `IP của bạn đang bị chặn tạm thời. Vui lòng thử lại sau: ${banExpiresDate}` });
+        } else {
+            BANNED_IPS.delete(ip);
+            console.log(`[UNBAN] Temporary ban expired for IP: ${ip}.`);
+        }
+    }
+
+    // Bước 3: Kiểm tra IP theo thời gian thực
+    const ipCheckResult = await checkIpRealtime(ip);
     if (!ipCheckResult.valid) {
         return res.status(403).json({ error: ipCheckResult.reason });
     }
 
-    // Nếu mọi thứ ổn, tiếp tục xử lý yêu cầu
     next();
 };
 
@@ -229,7 +255,6 @@ app.get('/', (req, res) => {
     res.status(200).send('Backend Doraemon đang chạy và hoạt động tốt!');
 });
 
-// Áp dụng Middleware bảo mật cho endpoint giải mã
 app.post('/giai-ma', securityMiddleware, async (req, res) => {
     const { userInput, recaptchaToken, visitorId } = req.body;
     const ip = req.ip;
@@ -247,21 +272,18 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
         });
         const recaptchaData = await verificationResponse.json();
 
-        // Nếu reCAPTCHA thất bại, ghi nhận và có thể cấm
         if (!recaptchaData.success) {
-            handleFailedAttempt(ip, visitorId);
+            handleFailedAttempt(ip, visitorId); 
             return res.status(401).json({ error: 'Xác thực không thành công. Vui lòng thử lại.' });
         }
         
-        // Nếu thành công, xóa bộ đếm lỗi (nếu có) để tránh cấm nhầm
         if (failedAttempts.has(ip)) {
             failedAttempts.delete(ip);
         }
-
+        
         console.log(`[SUCCESS] reCAPTCHA valid for IP: ${ip}`);
         let text = userInput.trim().toLowerCase();
         
-        // Logic giải mã
         const entries = Object.entries(tuDienDoraemon).sort((a, b) => b[0].length - a[0].length);
         let replaced = false;
         for (const [k, v] of entries) {

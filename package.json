@@ -4,18 +4,42 @@
   "description": "Dịch ngôn ngữ Doraemon với bảo mật reCAPTCHA",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "node-fetch": "^2.6.9"
   },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  },
   "engines": {
     "node": ">=18"
+  },
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/viet-8101/doraemon-backend"
+  },
+  "keywords": [
+    "doraemon",
+    "node",
+    "backend",
+    "api",
+    "express",
+    "recaptcha"
+  ],
+  "author": "viet-8101",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/viet-8101/doraemon-backend/issues"
+  },
+  "homepage": "https://github.com/viet-8101/doraemon-backend#readme",
+  "funding": {
+    "type": "individual",
+    "url": "https://github.com/sponsors/viet-8101"
   }
 }

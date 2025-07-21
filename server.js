@@ -16,7 +16,7 @@ app.use(cors({
 }));
 
 app.use(express.json());
-app.set('trust proxy', 1);
+app.set('trust proxy', 1); // Nếu app chạy sau proxy/nginx
 
 // --- 3. BIẾN BẢO MẬT ---
 const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
@@ -140,9 +140,22 @@ const tuDienDoraemon = {
 
 // --- 5. HỖ TRỢ BẢO MẬT ---
 
+// Hàm lấy IP thực của client từ X-Forwarded-For hoặc req.ip
+function getClientIp(req) {
+    const forwardedIpsStr = req.headers['x-forwarded-for'];
+    if (forwardedIpsStr) {
+        // X-Forwarded-For có thể chứa nhiều IP (client, proxy1, proxy2...).
+        // IP đầu tiên trong chuỗi thường là IP thực của client.
+        const forwardedIps = forwardedIpsStr.split(',');
+        return forwardedIps[0].trim();
+    }
+    // Nếu không có X-Forwarded-For, dùng req.ip
+    return req.ip;
+}
+
 // Chuẩn hóa IP (loại bỏ ::ffff: để tránh trùng IP)
 function normalizeIp(ip) {
-    if (ip.startsWith('::ffff:')) {
+    if (ip && ip.startsWith('::ffff:')) { // Thêm kiểm tra ip tồn tại
         return ip.substring(7);
     }
     return ip;
@@ -179,9 +192,16 @@ function handleFailedAttempt(ip, visitorId) {
 
 // Middleware kiểm tra banned IP và fingerprint
 function securityMiddleware(req, res, next) {
-    const ipRaw = req.ip;
-    const ip = normalizeIp(ipRaw);
+    // Lấy IP client thực
+    const clientIpRaw = getClientIp(req);
+    const ip = normalizeIp(clientIpRaw);
     const visitorId = req.body.visitorId;
+
+    // Log để kiểm tra IP trong middleware
+    console.log(`[DEBUG Middleware IP] req.ip (Original): ${req.ip}`);
+    console.log(`[DEBUG Middleware IP] X-Forwarded-For: ${req.headers['x-forwarded-for']}`);
+    console.log(`[DEBUG Middleware IP] Client IP (processed): ${ip}`);
+
 
     // Kiểm tra banned vĩnh viễn fingerprint
     if (visitorId && BANNED_FINGERPRINTS.has(visitorId)) {
@@ -213,8 +233,15 @@ app.get('/', (req, res) => {
 // API để giải mã từ điển Doraemon và xác thực reCAPTCHA
 app.post('/giai-ma', securityMiddleware, async (req, res) => {
     const { userInput, recaptchaToken, visitorId } = req.body;
-    const ipRaw = req.ip;
-    const ip = normalizeIp(ipRaw);
+    
+    // Lấy IP client thực cho endpoint này
+    const clientIpRaw = getClientIp(req);
+    const ip = normalizeIp(clientIpRaw);
+
+    // Log để kiểm tra IP trong endpoint chính
+    console.log(`[DEBUG Endpoint IP] req.ip (Original): ${req.ip}`);
+    console.log(`[DEBUG Endpoint IP] X-Forwarded-For: ${req.headers['x-forwarded-for']}`);
+    console.log(`[DEBUG Endpoint IP] Client IP (processed): ${ip}`);
 
     // Kiểm tra đầu vào
     if (!userInput || !recaptchaToken) {

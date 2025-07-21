@@ -10,8 +10,9 @@ dotenv.config(); // Gọi config sau khi import
 const app = express();
 const PORT = process.env.PORT || 3000; // Sử dụng cổng của Render hoặc 3000 nếu chạy cục bộ
 
+// CORS an toàn, chỉ cho phép frontend truy cập
 app.use(cors({
-    origin: 'https://viet-8101.github.io/giai-ma-doraemon' // ĐÃ SỬA LẠI ĐÚNG ĐỊA CHỈ FRONTEND
+    origin: 'https://viet-8101.github.io' // Đảm bảo đúng địa chỉ frontend của bạn
 }));
 
 app.use(express.json());

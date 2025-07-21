@@ -349,6 +349,6 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
 });
 
 // --- 7. KHỞI ĐỘNG SERVER ---
-app.listen(PORT, () => {
-    console.log(`🚀 Server đang chạy tại http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => { // Thay đổi ở đây: thêm '0.0.0.0'
+    console.log(`🚀 Server đang chạy tại http://0.0.0.0:${PORT}`); // Cập nhật log
 });

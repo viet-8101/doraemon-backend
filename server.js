@@ -18,6 +18,34 @@ app.use(cors({
 app.use(express.json());
 app.set('trust proxy', 1); // Nếu app chạy sau proxy/nginx
 
+// --- THÊM CÁC HTTP SECURITY HEADERS ---
+// Các headers này giúp tăng cường bảo mật cho trình duyệt của người dùng
+app.use((req, res, next) => {
+    // Strict-Transport-Security: Buộc trình duyệt chỉ kết nối qua HTTPS trong tương lai
+    // max-age: Thời gian (giây) mà trình duyệt nên ghi nhớ chỉ sử dụng HTTPS.
+    // includeSubDomains: Áp dụng chính sách cho tất cả các subdomain.
+    // preload: Cho phép đưa trang vào danh sách preload của trình duyệt (cần đăng ký riêng).
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+
+    // X-Content-Type-Options: Ngăn trình duyệt "đoán" kiểu MIME, giảm rủi ro XSS
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    // X-Frame-Options: Ngăn chặn clickjacking bằng cách không cho phép nhúng trang vào iframe
+    res.setHeader('X-Frame-Options', 'DENY');
+
+    // X-XSS-Protection: Kích hoạt bộ lọc XSS tích hợp của trình duyệt
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+
+    // Content-Security-Policy: Kiểm soát các nguồn tài nguyên mà trình duyệt được phép tải/thực thi
+    // Đây là một CSP cơ bản. Bạn có thể cần tùy chỉnh nó kỹ hơn tùy theo tài nguyên frontend của bạn.
+    // Ví dụ: chỉ cho phép script từ nguồn gốc và từ Google (cho reCAPTCHA)
+    res.setHeader(
+        'Content-Security-Policy',
+        "default-src 'self'; script-src 'self' https://www.google.com https://www.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';"
+    );
+    next();
+});
+
 // --- 3. BIẾN BẢO MẬT ---
 const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
 if (!RECAPTCHA_SECRET_KEY) {
@@ -161,6 +189,27 @@ function normalizeIp(ip) {
     return ip;
 }
 
+// Hàm xác thực và làm sạch đầu vào người dùng
+function sanitizeInput(input) {
+    if (typeof input !== 'string') {
+        return ''; // Trả về chuỗi rỗng nếu không phải string
+    }
+    // Giới hạn độ dài input để ngăn chặn các request quá lớn
+    const MAX_INPUT_LENGTH = 200;
+    let sanitized = input.trim().toLowerCase();
+
+    if (sanitized.length > MAX_INPUT_LENGTH) {
+        sanitized = sanitized.substring(0, MAX_INPUT_LENGTH);
+    }
+
+    // Loại bỏ các ký tự không an toàn hoặc không mong muốn
+    // Ví dụ: chỉ cho phép chữ cái, số, dấu cách và một số dấu câu cơ bản.
+    // Tùy thuộc vào yêu cầu của bạn, regex này có thể cần được điều chỉnh.
+    sanitized = sanitized.replace(/[^a-z0-9àáạảãăắằặẳẵâấầậẩẫèéẹẻẽêếềệểễìíịỉĩòóọỏõôốồộổỗơớờợởỡùúụủũưứừựửữđ\s.,!?-]/g, '');
+
+    return sanitized;
+}
+
 // Ghi nhận lần fail reCAPTCHA, nếu vượt ngưỡng sẽ banned
 function handleFailedAttempt(ip, visitorId) {
     const now = Date.now();
@@ -197,12 +246,6 @@ function securityMiddleware(req, res, next) {
     const ip = normalizeIp(clientIpRaw);
     const visitorId = req.body.visitorId;
 
-    // // ĐÃ XÁC NHẬN IP, CÓ THỂ BỎ COMMENT CÁC DÒNG DEBUG NÀY ĐI
-    // console.log(`[DEBUG Middleware IP] req.ip (Original): ${req.ip}`);
-    // console.log(`[DEBUG Middleware IP] X-Forwarded-For: ${req.headers['x-forwarded-for']}`);
-    // console.log(`[DEBUG Middleware IP] Client IP (processed): ${ip}`);
-
-
     // Kiểm tra banned vĩnh viễn fingerprint
     if (visitorId && BANNED_FINGERPRINTS.has(visitorId)) {
         return res.status(403).json({ error: 'Truy cập của bạn đã bị chặn vĩnh viễn.' });
@@ -238,14 +281,15 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
     const clientIpRaw = getClientIp(req);
     const ip = normalizeIp(clientIpRaw);
 
-    // // ĐÃ XÁC NHẬN IP, CÓ THỂ BỎ COMMENT CÁC DÒNG DEBUG NÀY ĐI
-    // console.log(`[DEBUG Endpoint IP] req.ip (Original): ${req.ip}`);
-    // console.log(`[DEBUG Endpoint IP] X-Forwarded-For: ${req.headers['x-forwarded-for']}`);
-    // console.log(`[DEBUG Endpoint IP] Client IP (processed): ${ip}`);
-
     // Kiểm tra đầu vào
     if (!userInput || !recaptchaToken) {
         return res.status(400).json({ error: 'Thiếu dữ liệu đầu vào hoặc reCAPTCHA token.' });
+    }
+
+    // Áp dụng làm sạch và xác thực đầu vào
+    const sanitizedUserInput = sanitizeInput(userInput);
+    if (!sanitizedUserInput) {
+        return res.status(400).json({ error: 'Dữ liệu đầu vào không hợp lệ hoặc quá dài.' });
     }
 
     try {
@@ -254,6 +298,10 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
         const params = new URLSearchParams();
         params.append('secret', RECAPTCHA_SECRET_KEY);
         params.append('response', recaptchaToken);
+        // Thêm IP của người dùng vào yêu cầu xác minh reCAPTCHA để tăng cường độ chính xác
+        if (ip) {
+            params.append('remoteip', ip);
+        }
 
         const verificationResponse = await fetch(recaptchaVerificationUrl, {
             method: 'POST',
@@ -276,8 +324,8 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
 
         console.log(`[SUCCESS] reCAPTCHA valid cho IP: ${ip}`);
 
-        // Xử lý từ điển Doraemon
-        let text = userInput.trim().toLowerCase();
+        // Xử lý từ điển Doraemon với input đã được làm sạch
+        let text = sanitizedUserInput;
         const entries = Object.entries(tuDienDoraemon).sort((a, b) => b[0].length - a[0].length); // Sắp xếp theo độ dài từ khóa
         let replaced = false;
         

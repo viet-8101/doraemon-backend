@@ -11,7 +11,7 @@ const app = express();
 const PORT = process.env.PORT || 3000; // Sử dụng cổng của Render hoặc 3000 nếu chạy cục bộ
 
 app.use(cors({
-    origin: 'https://viet-8101.github.io/giai-ma-doraemon/' // ĐÃ SỬA LẠI ĐÚNG ĐỊA CHỈ FRONTEND
+    origin: 'https://viet-8101.github.io/giai-ma-doraemon' // ĐÃ SỬA LẠI ĐÚNG ĐỊA CHỈ FRONTEND
 }));
 
 app.use(express.json());

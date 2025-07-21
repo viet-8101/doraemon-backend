@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 3000; // Sử dụng cổng của Render hoặc
 
 // CORS an toàn, chỉ cho phép frontend truy cập
 app.use(cors({
-    origin: 'https://viet-8101.github.io'
+    origin: 'https://viet-8101.github.github.io' // Đảm bảo đúng địa chỉ frontend của bạn
 }));
 
 app.use(express.json());
@@ -35,7 +35,7 @@ const FAILED_ATTEMPTS_RESET_MS = 60 * 60 * 1000; // reset count sau 1 giờ
 // Lưu số lần fail reCAPTCHA theo IP
 const failedAttempts = new Map(); // ip -> { count, lastFailTime }
 
-// --- 4. TỪ ĐIỂN DORAEMON (giữ nguyên) ---
+// --- 4. TỪ ĐIỂN DORAEMON ---
 const tuDienDoraemon = {
     "cái loa biết đi": "Jaian",
     "thánh chảnh": "Suneo",
@@ -197,10 +197,10 @@ function securityMiddleware(req, res, next) {
     const ip = normalizeIp(clientIpRaw);
     const visitorId = req.body.visitorId;
 
-    // Log để kiểm tra IP trong middleware
-    console.log(`[DEBUG Middleware IP] req.ip (Original): ${req.ip}`);
-    console.log(`[DEBUG Middleware IP] X-Forwarded-For: ${req.headers['x-forwarded-for']}`);
-    console.log(`[DEBUG Middleware IP] Client IP (processed): ${ip}`);
+    // // ĐÃ XÁC NHẬN IP, CÓ THỂ BỎ COMMENT CÁC DÒNG DEBUG NÀY ĐI
+    // console.log(`[DEBUG Middleware IP] req.ip (Original): ${req.ip}`);
+    // console.log(`[DEBUG Middleware IP] X-Forwarded-For: ${req.headers['x-forwarded-for']}`);
+    // console.log(`[DEBUG Middleware IP] Client IP (processed): ${ip}`);
 
 
     // Kiểm tra banned vĩnh viễn fingerprint
@@ -238,10 +238,10 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
     const clientIpRaw = getClientIp(req);
     const ip = normalizeIp(clientIpRaw);
 
-    // Log để kiểm tra IP trong endpoint chính
-    console.log(`[DEBUG Endpoint IP] req.ip (Original): ${req.ip}`);
-    console.log(`[DEBUG Endpoint IP] X-Forwarded-For: ${req.headers['x-forwarded-for']}`);
-    console.log(`[DEBUG Endpoint IP] Client IP (processed): ${ip}`);
+    // // ĐÃ XÁC NHẬN IP, CÓ THỂ BỎ COMMENT CÁC DÒNG DEBUG NÀY ĐI
+    // console.log(`[DEBUG Endpoint IP] req.ip (Original): ${req.ip}`);
+    // console.log(`[DEBUG Endpoint IP] X-Forwarded-For: ${req.headers['x-forwarded-for']}`);
+    // console.log(`[DEBUG Endpoint IP] Client IP (processed): ${ip}`);
 
     // Kiểm tra đầu vào
     if (!userInput || !recaptchaToken) {

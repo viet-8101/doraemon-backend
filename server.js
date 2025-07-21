@@ -1,12 +1,14 @@
 // --- 1. IMPORT CÁC THƯ VIỆN ---
-const express = require('express');
-const cors = require('cors');
-const fetch = require('node-fetch'); // cần cài package node-fetch
-require('dotenv').config();
+import express from 'express';
+import cors from 'cors';
+import fetch from 'node-fetch'; // Cập nhật import cho ES Modules
+import dotenv from 'dotenv'; // Cập nhật import cho ES Modules
+
+dotenv.config(); // Gọi config sau khi import
 
 // --- 2. KHỞI TẠO ỨNG DỤNG ---
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000; // Sử dụng cổng của Render hoặc 3000 nếu chạy cục bộ
 
 // CORS an toàn, chỉ cho phép frontend truy cập
 app.use(cors({
@@ -14,7 +16,7 @@ app.use(cors({
 }));
 
 app.use(express.json());
-app.set('trust proxy', 1); // Nếu app chạy sau proxy/nginx
+app.set('trust proxy', 1);
 
 // --- 3. BIẾN BẢO MẬT ---
 const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;

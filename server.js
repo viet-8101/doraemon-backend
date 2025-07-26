@@ -77,6 +77,9 @@ async function initializeFirebaseOnServer() {
     let config;
     try {
         config = JSON.parse(firebaseConfigString);
+        // THÊM DÒNG NÀY ĐỂ DEBUG API KEY
+        console.log('Firebase Config được đọc từ ENV:', config);
+        console.log('API Key được sử dụng:', config.apiKey);
     } catch (e) {
         console.error('Lỗi: FIREBASE_CONFIG không phải là chuỗi JSON hợp lệ.', e);
         db = null;

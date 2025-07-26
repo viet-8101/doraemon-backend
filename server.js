@@ -4,12 +4,10 @@ import cors from 'cors';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken'; // Để tạo và xác minh token admin
-import crypto from 'crypto'; // Thêm thư viện crypto để tạo JWT_SECRET ngẫu nhiên
 
-// Firebase Client SDK imports
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, getDocs, deleteDoc, deleteField, increment } from 'firebase/firestore';
+// Firebase Admin SDK imports
+import admin from 'firebase-admin';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore'; // Sử dụng FieldValue từ admin SDK
 
 dotenv.config();
 
@@ -56,58 +54,47 @@ if (!RECAPTCHA_SECRET_KEY || !ADMIN_USERNAME || !ADMIN_PASSWORD) {
     console.error('Lỗi: RECAPTCHA_SECRET_KEY, ADMIN_USERNAME hoặc ADMIN_PASSWORD chưa được đặt!');
 }
 
-// --- KHỞI TẠO FIREBASE ---
-let firebaseApp;
-let db;
-let auth;
-let serverUserId; // Đổi tên để tránh nhầm lẫn với userId của người dùng cuối
+// --- KHỞI TẠO FIREBASE ADMIN SDK ---
+let db; // Firestore instance
+
+async function initializeFirebaseAdmin() {
+    const serviceAccountKeyString = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    if (!serviceAccountKeyString) {
+        console.error('Lỗi: FIREBASE_SERVICE_ACCOUNT_KEY chưa được đặt trong biến môi trường. Firestore sẽ không hoạt động.');
+        db = null;
+        return;
+    }
+
+    let serviceAccount;
+    try {
+        serviceAccount = JSON.parse(serviceAccountKeyString);
+        console.log('Firebase Service Account Key được đọc từ ENV.');
+    } catch (e) {
+        console.error('Lỗi: FIREBASE_SERVICE_ACCOUNT_KEY không phải là chuỗi JSON hợp lệ.', e);
+        db = null;
+        return;
+    }
+
+    try {
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
+        db = getFirestore(); // Lấy Firestore instance từ Admin SDK
+        console.log('Firebase Admin SDK đã được khởi tạo và kết nối với Firestore.');
+    } catch (error) {
+        console.error('Lỗi khi khởi tạo Firebase Admin SDK:', error);
+        db = null;
+    }
+}
+
+initializeFirebaseAdmin(); // Gọi hàm khởi tạo Firebase Admin SDK
 
 // Lấy app_id từ môi trường Render (hoặc dùng mặc định nếu chạy cục bộ không có)
 const appId = process.env.RENDER_SERVICE_ID || 'default-render-app-id'; // Render cung cấp RENDER_SERVICE_ID
 
-async function initializeFirebaseOnServer() {
-    const firebaseConfigString = process.env.FIREBASE_CONFIG;
-    if (!firebaseConfigString) {
-        console.warn('Cảnh báo: FIREBASE_CONFIG chưa được đặt trong biến môi trường. Firestore sẽ không hoạt động.');
-        db = null;
-        auth = null;
-        return;
-    }
-
-    let config;
-    try {
-        config = JSON.parse(firebaseConfigString);
-        // THÊM DÒNG NÀY ĐỂ DEBUG API KEY
-        console.log('Firebase Config được đọc từ ENV:', config);
-        console.log('API Key được sử dụng:', config.apiKey);
-    } catch (e) {
-        console.error('Lỗi: FIREBASE_CONFIG không phải là chuỗi JSON hợp lệ.', e);
-        db = null;
-        auth = null;
-        return;
-    }
-
-    firebaseApp = initializeApp(config);
-    db = getFirestore(firebaseApp);
-    auth = getAuth(firebaseApp);
-
-    try {
-        // Đăng nhập ẩn danh để có quyền truy cập Firestore theo quy tắc bảo mật
-        await signInAnonymously(auth);
-        serverUserId = auth.currentUser?.uid || 'anonymous_server_user';
-        console.log('Firebase Client SDK đã được khởi tạo và xác thực ẩn danh trên server. Server User ID:', serverUserId);
-    } catch (error) {
-        console.error('Lỗi khi xác thực Firebase ẩn danh trên server:', error);
-        db = null;
-        auth = null;
-    }
-}
-
-initializeFirebaseOnServer(); // Gọi hàm khởi tạo Firebase
-
 // --- 4. TỪ ĐIỂN DORAEMON ---
 const tuDienDoraemon = {
-    "cái loa biết đi": "Jaian", "thánh chảnh": "Suneo", "cục nợ quốc dân": "Nobita", "trùm chém gió": "Suneo", "boss ăn vặt": "Doraemon", "siêu nhân gục ngã": "Nobita", "máy phát kẹo": "Doraemon", "ổ bom di động": "Jaian", "thánh phá đồ": "Nobita", "chuyên gia gây họa": "Nobita", "nhà tài trợ nước mắt": "mẹ Nobita", "lò luyện điểm 0": "lớp học của Nobita", "trùm thất tình": "Nobita", "đứa trẻ cuối cùng của mushika": "Micca", "máy ATM biết đi": "Doraemon", "trí tuệ nhân tạo có tâm": "Doraemon", "con tinh tinh": "Jaian", "con khỉ đột": "Jaian", "khỉ đột": "Jaian", "tinh tinh": "Jaian", "con cáo": "Suneo", "cáo": "Suneo", "bạch tuộc": "Noise", "quần dài": "2 con cá trắm đen đc làm ở Pháp rất là mắc tiền (của Suneo)", "mụ phù thủy": "mẹ của Nobita", "tên ngốc hậu đậu": "Nobita", "tên robinson phiền phức": "Nobita", "thiên tài ngủ": "Nobita", "diễn viên suất sắc": "Nobita", "bậc thầy năn nỉ": "Nobita", "thiên tài thắt dây": "Nobita", "tay vua súng": "Nobita", "xe buýt": "Nobita", "xe bus": "Nobita", "mèo máy": "Doraemon", "mỏ nhọn": "Suneo", "lồi rốn": "Jaian", "yên ắng": "nhà Shizuka", "hình tròn": "bánh rán dorayaki", "kẻ tham lam": "Jaian", "hai người nổi tiếng ham ăn": "Jaian và Suneo", "điểm đen": "điểm 0", "bàn tay vàng trong làng ngáo ngơ": "Nobita", "cục tạ quốc dân": "Nobita", "đại ca sân trường": "Jaian", "người mẫu sừng sỏ": "Suneo", "cô gái tắm mỗi tập": "Shizuka", "vua bánh rán": "Doraemon", "thánh cầu cứu": "Nobita", "người đến từ tương lai": "Doraemon", "cây ATM sống": "Doraemon", "lồng tiếng động đất": "Jaian", "diễn viên chính của bi kịch": "Nobita", "fan cuồng công nghệ": "Suneo", "kẻ lười biếng nhỏ bé": "Nobita", "chồn xanh nhỏ đáng yêu": "Doraemon", "bình yên trước cơn bão": "nhà Shizuka", "cậu bé sáo lạc điệu": "Nobita", "loa phóng thanh biết đi": "Jaian", "trùm phá nốt": "Nobita", "người cứu âm nhạc địa cầu": "Doraemon", "quái vật hút âm": "bào tử noise", "người bạn đến từ hành tinh âm nhạc": "Micca", "thánh phá bản nhạc": "Nobita", "cây sáo truyền thuyết": "cây sáo dọc của mushika", "bản nhạc giải cứu trái đất": "bản giao hưởng địa cầu", "phi công nghiệp dư": "Nobita", "vùng đất trong mơ": "Utopia", "cư dân đám mây": "người sống ở Utopia", "nhà trên trời view đẹp": "Utopia", "người bạn Utopia": "Sonya", "trùm điều khiển thời tiết": "quản lý Utopia", "mặt trăng bay lạc": "Utopia", "chuyến phiêu lưu trên trời": "hành trình của nhóm Nobita", "lâu đài mây thần bí": "trung tâm điều hành Utopia", "trùm chấn động bầu trời": "Suneo lái máy bay", "cậu bé bay không bằng lái": "Nobita", "thánh nhảy moonwalk ngoài vũ trụ": "Nobita", "chuyên gia té không trọng lực": "Nobita", "trạm vũ trụ di động": "tàu của Doraemon", "người bạn tai dài trên mặt trăng": "Luca", "cư dân mặt trăng bí ẩn": "tộc người Espal", "đội thám hiểm mặt trăng": "nhóm Nobita", "mặt trăng giả tưởng": "thế giới do bảo bối tạo ra", "cuộc chiến không trọng lực": "trận đấu trên mặt trăng", "lũ bạn ngoài hành tinh đáng yêu": "Luca và đồng bọn", "bầu trời đêm đầy ảo mộng": "khung cảnh mặt trăng", "cậu bé lười biếng nhất thành phố": "Nobita", "cậu bé xấu tính nhất thành phố": "Jaian", "nhạc sĩ vũ trụ": "Trupet", "nhà soạn nhạc vĩ đại": "Trupet", "người sáng tác giao hưởng địa cầu": "Trupet", "chủ nhân bản giao hưởng địa cầu": "Trupet", "nhà sáng tạo âm nhạc vũ trụ": "Trupet", "nhạc sĩ bảo vệ hòa bình âm nhạc": "Trupet", "rùa siêu tốc vũ trụ": "Moto", "rùa vũ trụ có mai thép": "Moto", "rùa siêu bền": "Moto", "tốc độ vũ trụ từ mai rùa": "Moto", "vũ trụ đua rùa": "Moto", "con rùa nhanh nhất trong không gian": "Moto", "viên đạn của đại bác không khí": "Moto"
+    "cái loa biết đi": "Jaian", "thánh chảnh": "Suneo", "cục nợ quốc dân": "Nobita", "trùm chém gió": "Suneo", "boss ăn vặt": "Doraemon", "siêu nhân gục ngã": "Nobita", "máy phát kẹo": "Doraemon", "ổ bom di động": "Jaian", "thánh phá đồ": "Nobita", "chuyên gia gây họa": "Nobita", "nhà tài trợ nước mắt": "mẹ Nobita", "lò luyện điểm 0": "lớp học của Nobita", "trùm thất tình": "Nobita", "đứa trẻ cuối cùng của mushika": "Micca", "máy ATM biết đi": "Doraemon", "trí tuệ nhân tạo có tâm": "Doraemon", "con tinh tinh": "Jaian", "con khỉ đột": "Jaian", "khỉ đột": "Jaian", "tinh tinh": "Jaian", "con cáo": "Suneo", "cáo": "Suneo", "bạch tuộc": "Noise", "quần dài": "2 con cá trắm đen đc làm ở Pháp rất là mắc tiền (của Suneo)", "mụ phù thủy": "mẹ của Nobita", "tên ngốc hậu hậu": "Nobita", "tên robinson phiền phức": "Nobita", "thiên tài ngủ": "Nobita", "diễn viên suất sắc": "Nobita", "bậc thầy năn nỉ": "Nobita", "thiên tài thắt dây": "Nobita", "tay vua súng": "Nobita", "xe buýt": "Nobita", "xe bus": "Nobita", "mèo máy": "Doraemon", "mỏ nhọn": "Suneo", "lồi rốn": "Jaian", "yên ắng": "nhà Shizuka", "hình tròn": "bánh rán dorayaki", "kẻ tham lam": "Jaian", "hai người nổi tiếng ham ăn": "Jaian và Suneo", "điểm đen": "điểm 0", "bàn tay vàng trong làng ngáo ngơ": "Nobita", "cục tạ quốc dân": "Nobita", "đại ca sân trường": "Jaian", "người mẫu sừng sỏ": "Suneo", "cô gái tắm mỗi tập": "Shizuka", "vua bánh rán": "Doraemon", "thánh cầu cứu": "Nobita", "người đến từ tương lai": "Doraemon", "cây ATM sống": "Doraemon", "lồng tiếng động đất": "Jaian", "diễn viên chính của bi kịch": "Nobita", "fan cuồng công nghệ": "Suneo", "kẻ lười biếng nhỏ bé": "Nobita", "chồn xanh nhỏ đáng yêu": "Doraemon", "bình yên trước cơn bão": "nhà Shizuka", "cậu bé sáo lạc điệu": "Nobita", "loa phóng thanh biết đi": "Jaian", "trùm phá nốt": "Nobita", "người cứu âm nhạc địa cầu": "Doraemon", "quái vật hút âm": "bào tử noise", "người bạn đến từ hành tinh âm nhạc": "Micca", "thánh phá bản nhạc": "Nobita", "cây sáo truyền thuyết": "cây sáo dọc của mushika", "bản nhạc giải cứu trái đất": "bản giao hưởng địa cầu", "phi công nghiệp dư": "Nobita", "vùng đất trong mơ": "Utopia", "cư dân đám mây": "người sống ở Utopia", "nhà trên trời view đẹp": "Utopia", "người bạn Utopia": "Sonya", "trùm điều khiển thời tiết": "quản lý Utopia", "mặt trăng bay lạc": "Utopia", "chuyến phiêu lưu trên trời": "hành trình của nhóm Nobita", "lâu đài mây thần bí": "trung tâm điều hành Utopia", "trùm chấn động bầu trời": "Suneo lái máy bay", "cậu bé bay không bằng lái": "Nobita", "thánh nhảy moonwalk ngoài vũ trụ": "Nobita", "chuyên gia té không trọng lực": "Nobita", "trạm vũ trụ di động": "tàu của Doraemon", "người bạn tai dài trên mặt trăng": "Luca", "cư dân mặt trăng bí ẩn": "tộc người Espal", "đội thám hiểm mặt trăng": "nhóm Nobita", "mặt trăng giả tưởng": "thế giới do bảo bối tạo ra", "cuộc chiến không trọng lực": "trận đấu trên mặt trăng", "lũ bạn ngoài hành tinh đáng yêu": "Luca và đồng bọn", "bầu trời đêm đầy ảo mộng": "khung cảnh mặt trăng", "cậu bé lười biếng nhất thành phố": "Nobita", "cậu bé xấu tính nhất thành phố": "Jaian", "nhạc sĩ vũ trụ": "Trupet", "nhà soạn nhạc vĩ đại": "Trupet", "người sáng tác giao hưởng địa cầu": "Trupet", "chủ nhân bản giao hưởng địa cầu": "Trupet", "nhà sáng tạo âm nhạc vũ trụ": "Trupet", "nhạc sĩ bảo vệ hòa bình âm nhạc": "Trupet", "rùa siêu tốc vũ trụ": "Moto", "rùa vũ trụ có mai thép": "Moto", "rùa siêu bền": "Moto", "tốc độ vũ trụ từ mai rùa": "Moto", "vũ trụ đua rùa": "Moto", "con rùa nhanh nhất trong không gian": "Moto", "viên đạn của đại bác không khí": "Moto"
 };
 
 // --- 5. HỖ TRỢ BẢO MẬT VÀ FIREBASE ---
@@ -122,7 +109,7 @@ const getAdminDataDocRef = () => {
         return null;
     }
     // Sử dụng appId để tạo đường dẫn collection động
-    return doc(db, 'artifacts', appId, 'public', 'data', 'admin_data');
+    return db.collection('artifacts').doc(appId).collection('public').doc('data').collection('admin_data').doc('main_data'); // Thay đổi đường dẫn cho Admin SDK
 };
 
 async function getAdminData() {
@@ -130,8 +117,8 @@ async function getAdminData() {
     if (!docRef) return {};
 
     try {
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
+        const docSnap = await docRef.get(); // Sử dụng .get() cho Admin SDK
+        if (docSnap.exists) {
             return docSnap.data();
         } else {
             const initialData = {
@@ -139,14 +126,14 @@ async function getAdminData() {
                 banned_fingerprints: {},
                 total_requests: 0,
                 total_failed_recaptcha: 0,
-                failedAttempts: {} // Thêm failedAttempts vào Firestore
+                failedAttempts: {}
             };
-            await setDoc(docRef, initialData);
+            await docRef.set(initialData); // Sử dụng .set() cho Admin SDK
             return initialData;
         }
     } catch (error) {
         console.error('Lỗi khi lấy admin data từ Firestore:', error);
-        return {}; // Trả về đối tượng rỗng để tránh crash
+        return {};
     }
 }
 
@@ -157,7 +144,7 @@ async function updateAdminData(dataToUpdate) {
         return;
     }
     try {
-        await updateDoc(docRef, dataToUpdate);
+        await docRef.update(dataToUpdate); // Sử dụng .update() cho Admin SDK
     } catch (error) {
         console.error('Lỗi khi cập nhật admin data vào Firestore:', error);
     }
@@ -214,7 +201,7 @@ async function handleFailedAttempt(ip, visitorId) {
 
     await updateAdminData({
         [`failedAttempts.${ip}`]: data,
-        total_failed_recaptcha: increment(1)
+        total_failed_recaptcha: FieldValue.increment(1) // Sử dụng FieldValue.increment cho Admin SDK
     });
 
     console.warn(`[RECAPTCHA FAIL] IP: ${ip} thất bại lần ${data.count}`);
@@ -229,7 +216,7 @@ async function handleFailedAttempt(ip, visitorId) {
         await updateAdminData({
             banned_ips: currentBannedIps,
             banned_fingerprints: currentBannedFingerprints,
-            [`failedAttempts.${ip}`]: deleteField()
+            [`failedAttempts.${ip}`]: FieldValue.delete() // Sử dụng FieldValue.delete cho Admin SDK
         });
 
         const banExpiresDate = new Date(banExpiresAt).toLocaleString('vi-VN');
@@ -293,7 +280,7 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
     const ip = normalizeIp(clientIpRaw);
 
     if (db) {
-        await updateAdminData({ total_requests: increment(1) });
+        await updateAdminData({ total_requests: FieldValue.increment(1) }); // Sử dụng FieldValue.increment
     } else {
         console.warn('Firestore chưa được khởi tạo, không thể cập nhật total_requests.');
     }
@@ -336,13 +323,13 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
         if (db) {
             const adminData = await getAdminData();
             if (adminData.failedAttempts?.[ip]) {
-                await updateAdminData({ [`failedAttempts.${ip}`]: deleteField() });
+                await updateAdminData({ [`failedAttempts.${ip}`]: FieldValue.delete() }); // Sử dụng FieldValue.delete
             }
         } else {
             console.warn('Firestore chưa được khởi tạo, không thể reset failedAttempts.');
         }
 
-        console.log(`[SUCCESS] reCAPTCHA valid cho IP: ${ip}`);
+        console.log(`[SUCCESS] reCAPTcha valid cho IP: ${ip}`);
 
         let text = sanitizedUserInput;
         const entries = Object.entries(tuDienDoraemon).sort((a, b) => b[0].length - a[0].length);

@@ -4,6 +4,7 @@ import cors from 'cors';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken'; // Để tạo và xác minh token admin
+import crypto from 'crypto'; // Thêm thư viện crypto để tạo JWT_SECRET ngẫu nhiên
 
 // Firebase Client SDK imports (sử dụng trên server theo yêu cầu của môi trường Canvas)
 // Đối với chạy cục bộ, bạn sẽ cần cấu hình Firebase của riêng mình.
@@ -56,7 +57,11 @@ app.use((req, res, next) => {
 const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME; // Thêm biến môi trường này
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD; // Thêm biến môi trường này
-const JWT_SECRET = process.env.JWT_SECRET || 'your_super_secret_jwt_key'; // Khóa bí mật cho JWT, nên đặt trong biến môi trường
+
+// Tạo JWT_SECRET ngẫu nhiên nếu không có trong biến môi trường
+// Đây là chuỗi ngẫu nhiên được tạo ra. Bạn NÊN thay thế nó bằng một biến môi trường trên Render.
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex'); 
+console.log('JWT_SECRET được sử dụng (chỉ hiển thị khi không có trong env):', JWT_SECRET); // Ghi log để bạn có thể sao chép nếu muốn đặt vào env
 
 if (!RECAPTCHA_SECRET_KEY || !ADMIN_USERNAME || !ADMIN_PASSWORD) {
     console.error('Lỗi: RECAPTCHA_SECRET_KEY, ADMIN_USERNAME hoặc ADMIN_PASSWORD chưa được đặt!');

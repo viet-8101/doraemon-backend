@@ -31,6 +31,7 @@ app.use(cors({
         'https://viet-8101.github.io', // Frontend của bạn trên GitHub Pages
         'http://localhost:3001',      // Cổng của frontend có thể khác 3000
         'http://localhost:3000',      // Cổng của backend mặc định
+        'http://localhost:5173',
         // Thêm URL Firebase Hosting của bạn vào đây khi bạn triển khai frontend lên Firebase
         // Ví dụ: 'https://your-firebase-project-id.web.app',
         // 'https://your-firebase-project-id.firebaseapp.com'

@@ -28,11 +28,12 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors({
     origin: [
-        'https://viet-8101.github.io', // Frontend của bạn trên GitHub Pages
-        'http://localhost:5173',      // Cổng mặc định của Vite dev server
+        'https://viet-8101.github.io', // Frontend của bạn trên GitHub Pages (URL gốc của GitHub Pages)
+        'https://viet-8101.github.io/admin-dashboard-doraemon/', // URL cụ thể của Dashboard trên GitHub Pages
+        'http://localhost:5173',      // Cổng mặc định của Vite dev server (giữ lại để phát triển cục bộ)
         'http://localhost:3001',      // Cổng của frontend có thể khác 3000 (nếu bạn dùng)
         'http://localhost:3000',      // Cổng của backend mặc định (nếu bạn dùng)
-        // Thêm URL Firebase Hosting của bạn vào đây khi bạn triển khai frontend lên Firebase
+        // Thêm URL Firebase Hosting của bạn vào đây khi bạn triển khai frontend lên Firebase (nếu có)
         // Ví dụ: 'https://your-firebase-project-id.web.app',
         // 'https://your-firebase-project-id.firebaseapp.com'
     ]

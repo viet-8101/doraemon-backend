@@ -29,9 +29,9 @@ const PORT = process.env.PORT || 3000;
 app.use(cors({
     origin: [
         'https://viet-8101.github.io', // Frontend của bạn trên GitHub Pages
-        'http://localhost:3001',      // Cổng của frontend có thể khác 3000
-        'http://localhost:3000',      // Cổng của backend mặc định
-        'http://localhost:5173',
+        'http://localhost:5173',      // Cổng mặc định của Vite dev server
+        'http://localhost:3001',      // Cổng của frontend có thể khác 3000 (nếu bạn dùng)
+        'http://localhost:3000',      // Cổng của backend mặc định (nếu bạn dùng)
         // Thêm URL Firebase Hosting của bạn vào đây khi bạn triển khai frontend lên Firebase
         // Ví dụ: 'https://your-firebase-project-id.web.app',
         // 'https://your-firebase-project-id.firebaseapp.com'
@@ -47,10 +47,6 @@ app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('X-XSS-Protection', '1; mode=block');
-    // Lưu ý: Nếu frontend của bạn không chạy trên cùng domain hoặc dùng các tài nguyên bên ngoài khác,
-    // bạn cần điều chỉnh Content-Security-Policy cho phù hợp.
-    // Ví dụ, nếu dùng Font Google, cần thêm 'https://fonts.gstatic.com' và 'https://fonts.googleapis.com'
-    // Nếu dùng Firebase client SDK, cần thêm các domain của Firebase.
     res.setHeader(
         'Content-Security-Policy',
         "default-src 'self'; script-src 'self' https://www.google.com https://www.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';"
@@ -62,7 +58,6 @@ app.use((req, res, next) => {
 const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
-// Sử dụng JWT_SECRET từ biến môi trường. Nếu không có, tạo ngẫu nhiên (chỉ dùng cho dev)
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
 
 if (!RECAPTCHA_SECRET_KEY || !ADMIN_USERNAME || !ADMIN_PASSWORD) {
@@ -118,7 +113,6 @@ initializeFirebaseAdmin(); // Gọi hàm khởi tạo Firebase Admin SDK
 const appId = process.env.RENDER_SERVICE_ID || 'default-render-app-id'; // Render cung cấp RENDER_SERVICE_ID
 
 // --- 4. TỪ ĐIỂN DORAEMON ---
-// (Giữ nguyên toàn bộ từ điển của bạn)
 const tuDienDoraemon = {
     "cái loa biết đi": "Jaian", "thánh chảnh": "Suneo", "cục nợ quốc dân": "Nobita", "trùm chém gió": "Suneo", "boss ăn vặt": "Doraemon", "siêu nhân gục ngã": "Nobita", "máy phát kẹo": "Doraemon", "ổ bom di động": "Jaian", "thánh phá đồ": "Nobita", "chuyên gia gây họa": "Nobita", "nhà tài trợ nước mắt": "mẹ Nobita", "lò luyện điểm 0": "lớp học của Nobita", "trùm thất tình": "Nobita", "đứa trẻ cuối cùng của mushika": "Micca", "máy ATM biết đi": "Doraemon", "trí tuệ nhân tạo có tâm": "Doraemon", "con tinh tinh": "Jaian", "con khỉ đột": "Jaian", "khỉ đột": "Jaian", "tinh tinh": "Jaian", "con cáo": "Suneo", "cáo": "Suneo", "bạch tuộc": "Noise", "quần dài": "2 con cá trắm đen đc làm ở Pháp rất là mắc tiền (của Suneo)", "mụ phù thủy": "mẹ của Nobita", "tên ngốc hậu hậu": "Nobita", "tên robinson phiền phức": "Nobita", "thiên tài ngủ": "Nobita", "diễn viên suất sắc": "Nobita", "bậc thầy năn nỉ": "Nobita", "thiên tài thắt dây": "Nobita", "tay vua súng": "Nobita", "xe buýt": "Nobita", "xe bus": "Nobita", "mèo máy": "Doraemon", "mỏ nhọn": "Suneo", "lồi rốn": "Jaian", "yên ắng": "nhà Shizuka", "hình tròn": "bánh rán dorayaki", "kẻ tham lam": "Jaian", "hai người nổi tiếng ham ăn": "Jaian và Suneo", "điểm đen": "điểm 0", "bàn tay vàng trong làng ngáo ngơ": "Nobita", "cục tạ quốc dân": "Nobita", "đại ca sân trường": "Jaian", "người mẫu sừng sỏ": "Suneo", "cô gái tắm mỗi tập": "Shizuka", "vua bánh rán": "Doraemon", "thánh cầu cứu": "Nobita", "người đến từ tương lai": "Doraemon", "cây ATM sống": "Doraemon", "lồng tiếng động đất": "Jaian", "diễn viên chính của bi kịch": "Nobita", "fan cuồng công nghệ": "Suneo", "kẻ lười biếng nhỏ bé": "Nobita", "chồn xanh nhỏ đáng yêu": "Doraemon", "bình yên trước cơn bão": "nhà Shizuka", "cậu bé sáo lạc điệu": "Nobita", "loa phóng thanh biết đi": "Jaian", "trùm phá nốt": "Nobita", "người cứu âm nhạc địa cầu": "Doraemon", "quái vật hút âm": "bào tử noise", "người bạn đến từ hành tinh âm nhạc": "Micca", "thánh phá bản nhạc": "Nobita", "cây sáo truyền thuyết": "cây sáo dọc của mushika", "bản nhạc giải cứu trái đất": "bản giao hưởng địa cầu", "phi công nghiệp dư": "Nobita", "vùng đất trong mơ": "Utopia", "cư dân đám mây": "người sống ở Utopia", "nhà trên trời view đẹp": "Utopia", "người bạn Utopia": "Sonya", "trùm điều khiển thời tiết": "quản lý Utopia", "mặt trăng bay lạc": "Utopia", "chuyến phiêu lưu trên trời": "hành trình của nhóm Nobita", "lâu đài mây thần bí": "trung tâm điều hành Utopia", "trùm chấn động bầu trời": "Suneo lái máy bay", "cậu bé bay không bằng lái": "Nobita", "thánh nhảy moonwalk ngoài vũ trụ": "Nobita", "chuyên gia té không trọng lực": "Nobita", "trạm vũ trụ di động": "tàu của Doraemon", "người bạn tai dài trên mặt trăng": "Luca", "cư dân mặt trăng bí ẩn": "tộc người Espal", "đội thám hiểm mặt trăng": "nhóm Nobita", "mặt trăng giả tưởng": "thế giới do bảo bối tạo ra", "cuộc chiến không trọng lực": "trận đấu trên mặt trăng", "lũ bạn ngoài hành tinh đáng yêu": "Luca và đồng bọn", "bầu trời đêm đầy ảo mộng": "khung cảnh mặt trăng", "cậu bé lười biếng nhất thành phố": "Nobita", "cậu bé xấu tính nhất thành phố": "Jaian", "nhạc sĩ vũ trụ": "Trupet", "nhà soạn nhạc vĩ đại": "Trupet", "người sáng tác giao hưởng địa cầu": "Trupet", "chủ nhân bản giao hưởng địa cầu": "Trupet", "nhà sáng tạo âm nhạc vũ trụ": "Trupet", "nhạc sĩ bảo vệ hòa bình âm nhạc": "Trupet", "rùa siêu tốc vũ trụ": "Moto", "rùa vũ trụ có mai thép": "Moto", "rùa siêu bền": "Moto", "tốc độ vũ trụ từ mai rùa": "Moto", "vũ trụ đua rùa": "Moto", "con rùa nhanh nhất trong không gian": "Moto", "viên đạn của đại bác không khí": "Moto"
 };
@@ -240,7 +234,8 @@ async function handleFailedAttempt(ip, visitorId) {
         const banExpiresAt = now + BAN_DURATION_MS;
         currentBannedIps[ip] = banExpiresAt;
         if (visitorId) {
-            currentBannedFingerprints[visitorId] = banExpiresAt; // Fingerprint bị banned vĩnh viễn (hoặc đến khi unban thủ công)
+            // Fingerprint sẽ bị ban vĩnh viễn (hoặc đến khi unban thủ công)
+            currentBannedFingerprints[visitorId] = banExpiresAt;
         }
         
         if (db) { // Chỉ cập nhật nếu Firestore đã được khởi tạo
@@ -321,7 +316,6 @@ app.get('/api/users', authenticateAdminToken, async (req, res) => { // Thêm aut
     }
     try {
         // Lấy tất cả người dùng từ Firebase Authentication
-        // listUsers() là phương thức của admin.auth() để lấy danh sách người dùng đã đăng ký
         const listUsersResult = await admin.auth().listUsers(1000); // Lấy tối đa 1000 người dùng
         const users = listUsersResult.users.map(userRecord => ({
             uid: userRecord.uid, // ID duy nhất của người dùng
@@ -460,6 +454,51 @@ app.get('/admin/stats', authenticateAdminToken, async (req, res) => {
         res.status(500).json({ error: 'Đã có lỗi xảy ra khi lấy dữ liệu admin.' });
     }
 });
+
+// API để ban một IP hoặc Fingerprint (MỚI THÊM)
+app.post('/admin/ban', authenticateAdminToken, async (req, res) => {
+    if (!db) {
+        return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
+    }
+    const { type, value, reason = 'Admin manually banned' } = req.body;
+
+    if (!type || !value) {
+        return res.status(400).json({ error: 'Thiếu loại hoặc giá trị để ban.' });
+    }
+
+    try {
+        const adminData = await getAdminData();
+        const now = Date.now();
+        const banExpiresAt = now + BAN_DURATION_MS; // Sử dụng thời gian ban mặc định
+
+        if (type === 'ip') {
+            if (adminData.banned_ips[value] && now < adminData.banned_ips[value]) {
+                return res.status(409).json({ error: `IP ${value} đã bị ban và còn hiệu lực đến ${new Date(adminData.banned_ips[value]).toLocaleString('vi-VN')}.` });
+            }
+            adminData.banned_ips[value] = banExpiresAt;
+            console.log(`[ADMIN BAN] IP ${value} bị ban đến ${new Date(banExpiresAt).toLocaleString('vi-VN')}. Lý do: ${reason}`);
+        } else if (type === 'fingerprint') {
+            if (adminData.banned_fingerprints[value] && now < adminData.banned_fingerprints[value]) { // Kiểm tra nếu đã ban và còn hiệu lực
+                 return res.status(409).json({ error: `Fingerprint ${value} đã bị ban và còn hiệu lực đến ${new Date(adminData.banned_fingerprints[value]).toLocaleString('vi-VN')}.` });
+            }
+            adminData.banned_fingerprints[value] = banExpiresAt; // Lưu thời gian hết hạn giống IP
+            console.log(`[ADMIN BAN] Fingerprint ${value} bị ban. Lý do: ${reason}`);
+        } else {
+            return res.status(400).json({ error: 'Loại ban không hợp lệ. Chỉ chấp nhận "ip" hoặc "fingerprint".' });
+        }
+
+        await updateAdminData({
+            banned_ips: adminData.banned_ips,
+            banned_fingerprints: adminData.banned_fingerprints
+        });
+        res.json({ success: true, message: `${type} ${value} đã được ban.` });
+
+    } catch (error) {
+        console.error('Lỗi khi ban:', error);
+        res.status(500).json({ error: 'Đã có lỗi xảy ra khi ban.' });
+    }
+});
+
 
 // API để unban một IP hoặc Fingerprint
 app.post('/admin/unban', authenticateAdminToken, async (req, res) => {

@@ -353,11 +353,13 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
     }
 
     if (!userInput || !recaptchaToken) {
+        console.error('Lỗi 400: Thiếu dữ liệu đầu vào hoặc reCAPTCHA token.');
         return res.status(400).json({ error: 'Thiếu dữ liệu đầu vào hoặc reCAPTCHA token.' });
     }
 
     const sanitizedUserInput = sanitizeInput(userInput);
     if (!sanitizedUserInput) {
+        console.error('Lỗi 400: Dữ liệu đầu vào không hợp lệ hoặc quá dài sau khi làm sạch.');
         return res.status(400).json({ error: 'Dữ liệu đầu vào không hợp lệ hoặc quá dài.' });
     }
 
@@ -370,13 +372,27 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
             params.append('remoteip', ip);
         }
 
+        console.log(`Đang gửi yêu cầu xác minh reCAPTCHA đến: ${recaptchaVerificationUrl}`);
+        console.log(`Với các tham số: ${params.toString()}`);
+
         const verificationResponse = await fetch(recaptchaVerificationUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: params.toString()
         });
 
+        if (!verificationResponse.ok) {
+            // Ghi log trạng thái HTTP và nội dung phản hồi nếu không thành công
+            const errorText = await verificationResponse.text();
+            console.error(`Lỗi HTTP từ reCAPTCHA API: ${verificationResponse.status} ${verificationResponse.statusText}. Phản hồi: ${errorText}`);
+            if (db) {
+                await handleFailedAttempt(ip, visitorId);
+            }
+            return res.status(verificationResponse.status).json({ error: 'Xác thực reCAPTCHA thất bại do lỗi HTTP từ Google.', details: errorText });
+        }
+
         const recaptchaData = await verificationResponse.json();
+        console.log('Phản hồi reCAPTCHA nhận được:', recaptchaData);
 
         if (!recaptchaData.success) {
             if (db) { // Chỉ xử lý nếu Firestore đã được khởi tạo
@@ -384,7 +400,8 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
             } else {
                 console.warn('Firestore chưa được khởi tạo, không thể ghi nhận thất bại reCAPTCHA.');
             }
-            return res.status(401).json({ error: 'Xác thực không thành công. Vui lòng thử lại.' });
+            console.error(`Xác thực reCAPTCHA không thành công. Lý do: ${JSON.stringify(recaptchaData['error-codes'])}`);
+            return res.status(401).json({ error: 'Xác thực không thành công. Vui lòng thử lại.', details: recaptchaData['error-codes'] });
         }
 
         // Nếu reCAPTCHA thành công, reset số lần thử thất bại của IP này
@@ -416,8 +433,10 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
         res.json({ success: true, ketQua });
 
     } catch (error) {
-        console.error('Lỗi server:', error);
-        res.status(500).json({ error: 'Đã có lỗi xảy ra ở phía máy chủ.' });
+        console.error('Lỗi khi gọi reCAPTCHA API hoặc lỗi server:', error);
+        // Ghi log toàn bộ đối tượng lỗi để có thêm thông tin chi tiết
+        console.error(error); 
+        res.status(500).json({ error: 'Đã có lỗi xảy ra ở phía máy chủ khi xác thực reCAPTCHA.', details: error.message });
     }
 });
 

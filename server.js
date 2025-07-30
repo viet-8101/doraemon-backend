@@ -120,7 +120,8 @@ const tuDienDoraemon = {
 };
 
 // --- 5. HỖ TRỢ BẢO MẬT VÀ FIREBASE ---
-const BAN_DURATION_MS = 12 * 60 * 60 * 1000; // 12 giờ
+const BAN_DURATION_MS = 12 * 60 * 60 * 1000; // 12 giờ cho ban tạm thời (từ reCAPTCHA)
+const PERMANENT_BAN_VALUE = Number.MAX_SAFE_INTEGER; // Giá trị biểu thị ban vĩnh viễn
 const FAILED_ATTEMPTS_THRESHOLD = 5;
 const FAILED_ATTEMPTS_RESET_MS = 60 * 60 * 1000; // reset count sau 1 giờ
 
@@ -233,10 +234,10 @@ async function handleFailedAttempt(ip, visitorId) {
     console.warn(`[RECAPTCHA FAIL] IP: ${ip} thất bại lần ${data.count}`);
 
     if (data.count >= FAILED_ATTEMPTS_THRESHOLD) {
-        const banExpiresAt = now + BAN_DURATION_MS;
+        const banExpiresAt = now + BAN_DURATION_MS; // Vẫn dùng BAN_DURATION_MS cho ban tự động
         currentBannedIps[ip] = banExpiresAt;
         if (visitorId) {
-            // Fingerprint sẽ bị ban vĩnh viễn (hoặc đến khi unban thủ công)
+            // Fingerprint từ reCAPTCHA cũng sẽ bị ban tạm thời
             currentBannedFingerprints[visitorId] = banExpiresAt;
         }
         
@@ -251,7 +252,7 @@ async function handleFailedAttempt(ip, visitorId) {
         }
 
         const banExpiresDate = new Date(banExpiresAt).toLocaleString('vi-VN');
-        console.error(`[TEMP-BAN] IP: ${ip} bị banned đến ${banExpiresDate}, visitorId ${visitorId || 'N/A'} banned (vĩnh viễn nếu có).`);
+        console.error(`[TEMP-BAN] IP: ${ip} bị banned đến ${banExpiresDate}, visitorId ${visitorId || 'N/A'} banned tạm thời.`);
     }
 }
 
@@ -265,18 +266,29 @@ async function securityMiddleware(req, res, next) {
     const currentBannedIps = adminData.banned_ips || {};
     const currentBannedFingerprints = adminData.banned_fingerprints || {};
 
-    // Kiểm tra banned fingerprint (vĩnh viễn)
+    // Kiểm tra banned fingerprint
     if (visitorId && currentBannedFingerprints[visitorId]) {
-        return res.status(403).json({ error: 'Truy cập của bạn đã bị chặn vĩnh viễn.' });
+        const banExpiresAt = currentBannedFingerprints[visitorId];
+        if (banExpiresAt === PERMANENT_BAN_VALUE || Date.now() < banExpiresAt) {
+            const banMessage = banExpiresAt === PERMANENT_BAN_VALUE ? 'vĩnh viễn' : `tạm thời. Vui lòng thử lại sau: ${new Date(banExpiresAt).toLocaleString('vi-VN')}`;
+            return res.status(403).json({ error: `Truy cập của bạn đã bị chặn ${banMessage}.` });
+        } else if (Date.now() >= banExpiresAt) {
+            // Fingerprint đã hết thời gian ban, gỡ ban tự động
+            delete currentBannedFingerprints[visitorId];
+            if (db) {
+                await updateAdminData({ banned_fingerprints: currentBannedFingerprints });
+            }
+            console.log(`[UNBAN] Fingerprint ${visitorId} đã được gỡ chặn tự động.`);
+        }
     }
 
-    // Kiểm tra banned IP (tạm thời)
+    // Kiểm tra banned IP
     const banExpiresAt = currentBannedIps[ip];
     if (banExpiresAt) {
-        if (Date.now() < banExpiresAt) {
-            const banExpiresDate = new Date(banExpiresAt).toLocaleString('vi-VN');
-            return res.status(403).json({ error: `IP của bạn đang bị chặn tạm thời. Vui lòng thử lại sau: ${banExpiresDate}` });
-        } else {
+        if (banExpiresAt === PERMANENT_BAN_VALUE || Date.now() < banExpiresAt) {
+            const banMessage = banExpiresAt === PERMANENT_BAN_VALUE ? 'vĩnh viễn' : `tạm thời. Vui lòng thử lại sau: ${new Date(banExpiresAt).toLocaleString('vi-VN')}`;
+            return res.status(403).json({ error: `IP của bạn đang bị chặn ${banMessage}.` });
+        } else if (Date.now() >= banExpiresAt) {
             // IP đã hết thời gian ban, gỡ ban tự động
             delete currentBannedIps[ip];
             if (db) {
@@ -490,20 +502,22 @@ app.post('/admin/ban', authenticateAdminToken, async (req, res) => {
     try {
         const adminData = await getAdminData();
         const now = Date.now();
-        const banExpiresAt = now + BAN_DURATION_MS; // Sử dụng thời gian ban mặc định
+        
+        // Đối với ban từ admin dashboard, đặt là vĩnh viễn
+        const banExpiresAt = PERMANENT_BAN_VALUE; 
 
         if (type === 'ip') {
-            if (adminData.banned_ips[value] && now < adminData.banned_ips[value]) {
-                return res.status(409).json({ error: `IP ${value} đã bị ban và còn hiệu lực đến ${new Date(adminData.banned_ips[value]).toLocaleString('vi-VN')}.` });
+            if (adminData.banned_ips[value] && adminData.banned_ips[value] === PERMANENT_BAN_VALUE) {
+                return res.status(409).json({ error: `IP ${value} đã bị ban vĩnh viễn.` });
             }
             adminData.banned_ips[value] = banExpiresAt;
-            console.log(`[ADMIN BAN] IP ${value} bị ban đến ${new Date(banExpiresAt).toLocaleString('vi-VN')}. Lý do: ${reason}`);
+            console.log(`[ADMIN BAN] IP ${value} bị ban vĩnh viễn. Lý do: ${reason}`);
         } else if (type === 'fingerprint') {
-            if (adminData.banned_fingerprints[value] && now < adminData.banned_fingerprints[value]) { // Kiểm tra nếu đã ban và còn hiệu lực
-                 return res.status(409).json({ error: `Fingerprint ${value} đã bị ban và còn hiệu lực đến ${new Date(adminData.banned_fingerprints[value]).toLocaleString('vi-VN')}.` });
+            if (adminData.banned_fingerprints[value] && adminData.banned_fingerprints[value] === PERMANENT_BAN_VALUE) {
+                return res.status(409).json({ error: `Fingerprint ${value} đã bị ban vĩnh viễn.` });
             }
-            adminData.banned_fingerprints[value] = banExpiresAt; // Lưu thời gian hết hạn giống IP
-            console.log(`[ADMIN BAN] Fingerprint ${value} bị ban. Lý do: ${reason}`);
+            adminData.banned_fingerprints[value] = banExpiresAt; // Lưu thời gian hết hạn là vĩnh viễn
+            console.log(`[ADMIN BAN] Fingerprint ${value} bị ban vĩnh viễn. Lý do: ${reason}`);
         } else {
             return res.status(400).json({ error: 'Loại ban không hợp lệ. Chỉ chấp nhận "ip" hoặc "fingerprint".' });
         }
@@ -512,7 +526,7 @@ app.post('/admin/ban', authenticateAdminToken, async (req, res) => {
             banned_ips: adminData.banned_ips,
             banned_fingerprints: adminData.banned_fingerprints
         });
-        res.json({ success: true, message: `${type} ${value} đã được ban.` });
+        res.json({ success: true, message: `${type} ${value} đã được ban vĩnh viễn.` });
 
     } catch (error) {
         console.error('Lỗi khi ban:', error);

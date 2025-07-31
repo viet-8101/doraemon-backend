@@ -417,17 +417,13 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
 
         // Nếu reCAPTCHA thành công, reset số lần thử thất bại của IP này
         if (db) { // Chỉ xử lý nếu Firestore đã được khởi tạo
-            const adminData = await getAdminData();
-            if (adminData.failedAttempts?.[ip]) {
-                console.log(`Firestore Reset: Đang xóa failedAttempts cho IP: ${ip}`); // Log mới
-                try {
-                    await updateAdminData({ [`failedAttempts.${ip}`]: FieldValue.delete() }); // Xóa hoàn toàn mục failedAttempts cho IP này
-                    console.log(`Firestore Reset: Đã xóa thành công failedAttempts cho IP: ${ip}`); // Log mới
-                } catch (deleteError) {
-                    console.error(`Firestore Reset: Lỗi khi xóa failedAttempts cho IP ${ip}:`, deleteError); // Log lỗi mới
-                }
-            } else {
-                console.log(`Firestore Reset: failedAttempts cho IP: ${ip} không tồn tại, không cần xóa.`); // Log mới
+            console.log(`Firestore Reset: Đang cố gắng xóa failedAttempts cho IP: ${ip}`); // Log mới
+            try {
+                // Attempt to delete directly. Firestore will handle if it doesn't exist.
+                await updateAdminData({ [`failedAttempts.${ip}`]: FieldValue.delete() });
+                console.log(`Firestore Reset: Đã xóa thành công failedAttempts cho IP: ${ip} (hoặc không tồn tại để xóa).`); // Log mới
+            } catch (deleteError) {
+                console.error(`Firestore Reset: Lỗi khi xóa failedAttempts cho IP ${ip}:`, deleteError); // Log lỗi mới
             }
         } else {
             console.warn('Firestore chưa được khởi tạo, không thể reset failedAttempts.');

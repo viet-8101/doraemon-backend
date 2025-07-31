@@ -419,7 +419,15 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
         if (db) { // Chỉ xử lý nếu Firestore đã được khởi tạo
             const adminData = await getAdminData();
             if (adminData.failedAttempts?.[ip]) {
-                await updateAdminData({ [`failedAttempts.${ip}`]: FieldValue.delete() }); // Xóa hoàn toàn mục failedAttempts cho IP này
+                console.log(`Firestore Reset: Đang xóa failedAttempts cho IP: ${ip}`); // Log mới
+                try {
+                    await updateAdminData({ [`failedAttempts.${ip}`]: FieldValue.delete() }); // Xóa hoàn toàn mục failedAttempts cho IP này
+                    console.log(`Firestore Reset: Đã xóa thành công failedAttempts cho IP: ${ip}`); // Log mới
+                } catch (deleteError) {
+                    console.error(`Firestore Reset: Lỗi khi xóa failedAttempts cho IP ${ip}:`, deleteError); // Log lỗi mới
+                }
+            } else {
+                console.log(`Firestore Reset: failedAttempts cho IP: ${ip} không tồn tại, không cần xóa.`); // Log mới
             }
         } else {
             console.warn('Firestore chưa được khởi tạo, không thể reset failedAttempts.');
@@ -593,4 +601,4 @@ async function startServer() {
     });
 }
 
-startServer(); // Gọi hàm khởi động server"
+startServer(); // Gọi hàm khởi động server

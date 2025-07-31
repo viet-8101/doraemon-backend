@@ -594,6 +594,3 @@ async function startServer() {
 }
 
 startServer(); // Gọi hàm khởi động server"
-I have selected the code above and am asking a query about/based on this code below.
-
-vậy giờ làm sao để fix lỗi time 

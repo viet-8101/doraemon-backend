@@ -109,8 +109,6 @@ async function initializeFirebaseAdmin() {
     }
 }
 
-initializeFirebaseAdmin(); // Gọi hàm khởi tạo Firebase Admin SDK
-
 // Lấy app_id từ môi trường Render (hoặc dùng mặc định nếu chạy cục bộ không có)
 const appId = process.env.RENDER_SERVICE_ID || 'default-render-app-id'; // Render cung cấp RENDER_SERVICE_ID
 
@@ -123,7 +121,7 @@ const tuDienDoraemon = {
 const BAN_DURATION_MS = 12 * 60 * 60 * 1000; // 12 giờ cho ban tạm thời (từ reCAPTCHA)
 const PERMANENT_BAN_VALUE = Number.MAX_SAFE_INTEGER; // Giá trị biểu thị ban vĩnh viễn
 const FAILED_ATTEMPTS_THRESHOLD = 5;
-const FAILED_ATTEMPTS_RESET_MS = 60 * 60 * 1000; // reset count sau 1 giờ
+const FAILED_ATTEMPTS_RESET_MS = 30 * 60 * 1000; // Đã thay đổi: reset count sau 30 phút
 
 // Lấy tham chiếu đến collection admin_data
 const getAdminDataDocRef = () => {
@@ -215,17 +213,17 @@ async function handleFailedAttempt(ip, visitorId) {
 
     let data = adminData.failedAttempts?.[ip] || { count: 0, lastFailTime: 0 };
 
-    if (now - data.lastFailTime > FAILED_ATTEMPTS_RESET_MS) {
-        data = { count: 1, lastFailTime: now };
+    if (now - data.lastFailTime > FAILED_ATTEMPTS_RESET_MS) { // Nếu thời gian giữa các lần thất bại lớn hơn ngưỡng reset
+        data = { count: 1, lastFailTime: now }; // Đặt lại số lần thất bại về 1
     } else {
-        data.count++;
+        data.count++; // Tăng số lần thất bại
         data.lastFailTime = now;
     }
 
     if (db) { // Chỉ cập nhật nếu Firestore đã được khởi tạo
         await updateAdminData({
             [`failedAttempts.${ip}`]: data,
-            total_failed_recaptcha: FieldValue.increment(1) // Sử dụng FieldValue.increment cho Admin SDK
+            total_failed_recaptcha: FieldValue.increment(1) // Sử dụng FieldValue.increment
         });
     } else {
         console.warn('Firestore chưa được khởi tạo, không thể ghi nhận thất bại reCAPTCHA vào Firestore.');
@@ -234,7 +232,7 @@ async function handleFailedAttempt(ip, visitorId) {
     console.warn(`[RECAPTCHA FAIL] IP: ${ip} thất bại lần ${data.count}`);
 
     if (data.count >= FAILED_ATTEMPTS_THRESHOLD) {
-        const banExpiresAt = now + BAN_DURATION_MS; // Vẫn dùng BAN_DURATION_MS cho ban tự động
+        const banExpiresAt = now + BAN_DURATION_MS; // Vẫn dùng BAN_DURATION_MS cho ban tạm thời từ reCAPTCHA
         currentBannedIps[ip] = banExpiresAt;
         if (visitorId) {
             // Fingerprint từ reCAPTCHA cũng sẽ bị ban tạm thời
@@ -245,7 +243,7 @@ async function handleFailedAttempt(ip, visitorId) {
             await updateAdminData({
                 banned_ips: currentBannedIps,
                 banned_fingerprints: currentBannedFingerprints,
-                [`failedAttempts.${ip}`]: FieldValue.delete() // Sử dụng FieldValue.delete cho Admin SDK
+                [`failedAttempts.${ip}`]: FieldValue.delete() // Xóa mục failedAttempts khi ban
             });
         } else {
              console.warn('Firestore chưa được khởi tạo, không thể cập nhật danh sách ban.');
@@ -420,7 +418,7 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
         if (db) { // Chỉ xử lý nếu Firestore đã được khởi tạo
             const adminData = await getAdminData();
             if (adminData.failedAttempts?.[ip]) {
-                await updateAdminData({ [`failedAttempts.${ip}`]: FieldValue.delete() }); // Sử dụng FieldValue.delete
+                await updateAdminData({ [`failedAttempts.${ip}`]: FieldValue.delete() }); // Xóa hoàn toàn mục failedAttempts cho IP này
             }
         } else {
             console.warn('Firestore chưa được khởi tạo, không thể reset failedAttempts.');
@@ -501,7 +499,6 @@ app.post('/admin/ban', authenticateAdminToken, async (req, res) => {
 
     try {
         const adminData = await getAdminData();
-        const now = Date.now();
         
         // Đối với ban từ admin dashboard, đặt là vĩnh viễn
         const banExpiresAt = PERMANENT_BAN_VALUE; 
@@ -584,6 +581,13 @@ app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
 
 
 // --- 7. KHỞI ĐỘNG SERVER ---
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Server đang chạy tại http://0.0.0.0:${PORT}`);
-});
+// Bọc việc khởi động server trong một hàm async để đảm bảo Firebase được khởi tạo trước
+async function startServer() {
+    await initializeFirebaseAdmin(); // Đảm bảo Firebase được khởi tạo hoàn chỉnh
+
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`🚀 Server đang chạy tại http://0.0.0.0:${PORT}`);
+    });
+}
+
+startServer(); // Gọi hàm khởi động server

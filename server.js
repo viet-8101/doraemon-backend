@@ -71,17 +71,18 @@ let db; // Firestore instance
 let firebaseAdminInitialized = false; // Biến cờ để theo dõi trạng thái khởi tạo
 
 async function initializeFirebaseAdmin() {
+    console.log('Firebase Init: Bắt đầu khởi tạo Firebase Admin SDK...');
     // Đảm bảo chỉ khởi tạo một lần
     if (admin.apps.length > 0) {
         db = getFirestore();
         firebaseAdminInitialized = true;
-        console.log('Firebase Admin SDK đã được khởi tạo trước đó.');
+        console.log('Firebase Init: Firebase Admin SDK đã được khởi tạo trước đó.');
         return;
     }
 
     const serviceAccountKeyString = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
     if (!serviceAccountKeyString) {
-        console.error('Lỗi: FIREBASE_SERVICE_ACCOUNT_KEY chưa được đặt trong biến môi trường. Firestore sẽ không hoạt động.');
+        console.error('Firebase Init: Lỗi: FIREBASE_SERVICE_ACCOUNT_KEY chưa được đặt trong biến môi trường! Firestore sẽ không hoạt động.');
         db = null;
         return;
     }
@@ -89,9 +90,9 @@ async function initializeFirebaseAdmin() {
     let serviceAccount;
     try {
         serviceAccount = JSON.parse(serviceAccountKeyString);
-        console.log('Firebase Service Account Key được đọc từ ENV.');
+        console.log('Firebase Init: Firebase Service Account Key được đọc từ ENV.');
     } catch (e) {
-        console.error('Lỗi: FIREBASE_SERVICE_ACCOUNT_KEY không phải là chuỗi JSON hợp lệ.', e);
+        console.error('Firebase Init: Lỗi: FIREBASE_SERVICE_ACCOUNT_KEY không phải là chuỗi JSON hợp lệ.', e);
         db = null;
         return;
     }
@@ -102,9 +103,9 @@ async function initializeFirebaseAdmin() {
         });
         db = getFirestore(); // Lấy Firestore instance từ Admin SDK
         firebaseAdminInitialized = true;
-        console.log('Firebase Admin SDK đã được khởi tạo và kết nối với Firestore.');
+        console.log('Firebase Init: Firebase Admin SDK đã được khởi tạo và kết nối với Firestore.');
     } catch (error) {
-        console.error('Lỗi khi khởi tạo Firebase Admin SDK:', error);
+        console.error('Firebase Init: Lỗi khi khởi tạo Firebase Admin SDK:', error);
         db = null;
     }
 }
@@ -583,11 +584,16 @@ app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
 // --- 7. KHỞI ĐỘNG SERVER ---
 // Bọc việc khởi động server trong một hàm async để đảm bảo Firebase được khởi tạo trước
 async function startServer() {
+    console.log('Server Startup: Bắt đầu khởi động server...');
     await initializeFirebaseAdmin(); // Đảm bảo Firebase được khởi tạo hoàn chỉnh
+    console.log('Server Startup: Firebase Admin SDK đã khởi tạo xong, chuẩn bị lắng nghe cổng.');
 
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`🚀 Server đang chạy tại http://0.0.0.0:${PORT}`);
     });
 }
 
-startServer(); // Gọi hàm khởi động server
+startServer(); // Gọi hàm khởi động server"
+I have selected the code above and am asking a query about/based on this code below.
+
+vậy giờ làm sao để fix lỗi time 

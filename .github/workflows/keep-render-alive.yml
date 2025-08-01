@@ -1,0 +1,13 @@
+name: ⏰ Keep Render Server Alive
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'  # Mỗi 5 phút
+  workflow_dispatch:        # Cho phép chạy thủ công
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🔁 Ping Render backend
+        run: curl -s https://doraemon-backend.onrender.com/

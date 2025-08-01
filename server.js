@@ -226,6 +226,8 @@ async function handleFailedAttempt(ip, visitorId) {
             [`failedAttempts.${ip}`]: data,
             total_failed_recaptcha: FieldValue.increment(1) // Sử dụng FieldValue.increment
         });
+        // LOG MỚI ĐƯỢC THÊM VÀO ĐÂY
+        console.log(`[FAILED-ATTEMPT-RECORDED] Lần thất bại mới đã được ghi nhận cho IP: ${ip}, tổng số lần là: ${data.count}`);
     } else {
         console.warn('Firestore chưa được khởi tạo, không thể ghi nhận thất bại reCAPTCHA vào Firestore.');
     }
@@ -261,9 +263,14 @@ async function securityMiddleware(req, res, next) {
     const ip = normalizeIp(clientIpRaw);
     const visitorId = req.body.visitorId;
 
+    // Log chi tiết để kiểm tra trạng thái dữ liệu
+    console.log(`[SECURITY-CHECK] Bắt đầu kiểm tra IP: ${ip}, VisitorId: ${visitorId}`);
     const adminData = await getAdminData();
     const currentBannedIps = adminData.banned_ips || {};
     const currentBannedFingerprints = adminData.banned_fingerprints || {};
+    console.log(`[SECURITY-CHECK-DATA] Dữ liệu ban hiện tại cho IP ${ip}:`, currentBannedIps[ip] ? new Date(currentBannedIps[ip]).toLocaleString('vi-VN') : 'Không bị ban');
+    console.log(`[SECURITY-CHECK-DATA] Dữ liệu ban hiện tại cho VisitorId ${visitorId}:`, currentBannedFingerprints[visitorId] ? new Date(currentBannedFingerprints[visitorId]).toLocaleString('vi-VN') : 'Không bị ban');
+
 
     // Kiểm tra banned fingerprint
     if (visitorId && currentBannedFingerprints[visitorId]) {
@@ -417,13 +424,13 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
 
         // Nếu reCAPTCHA thành công, reset số lần thử thất bại của IP này
         if (db) { // Chỉ xử lý nếu Firestore đã được khởi tạo
-            console.log(`Firestore Reset: Đang cố gắng xóa failedAttempts cho IP: ${ip}`); // Log mới
+            console.log(`Firestore Reset: Đang cố gắng xóa failedAttempts cho IP: ${ip}`);
             try {
                 // Attempt to delete directly. Firestore will handle if it doesn't exist.
                 await updateAdminData({ [`failedAttempts.${ip}`]: FieldValue.delete() });
-                console.log(`Firestore Reset: Đã xóa thành công failedAttempts cho IP: ${ip} (hoặc không tồn tại để xóa).`); // Log mới
+                console.log(`Firestore Reset: failedAttempts cho IP: ${ip} đã được xóa thành công (hoặc không tồn tại để xóa).`);
             } catch (deleteError) {
-                console.error(`Firestore Reset: Lỗi khi xóa failedAttempts cho IP ${ip}:`, deleteError); // Log lỗi mới
+                console.error(`Firestore Reset: Lỗi khi xóa failedAttempts cho IP ${ip}:`, deleteError);
             }
         } else {
             console.warn('Firestore chưa được khởi tạo, không thể reset failedAttempts.');
@@ -518,26 +525,24 @@ app.post('/admin/ban', authenticateAdminToken, async (req, res) => {
             if (adminData.banned_fingerprints[value] && adminData.banned_fingerprints[value] === PERMANENT_BAN_VALUE) {
                 return res.status(409).json({ error: `Fingerprint ${value} đã bị ban vĩnh viễn.` });
             }
-            adminData.banned_fingerprints[value] = banExpiresAt; // Lưu thời gian hết hạn là vĩnh viễn
+            adminData.banned_fingerprints[value] = banExpiresAt;
             console.log(`[ADMIN BAN] Fingerprint ${value} bị ban vĩnh viễn. Lý do: ${reason}`);
         } else {
-            return res.status(400).json({ error: 'Loại ban không hợp lệ. Chỉ chấp nhận "ip" hoặc "fingerprint".' });
+            return res.status(400).json({ error: 'Loại ban không hợp lệ.' });
         }
 
         await updateAdminData({
             banned_ips: adminData.banned_ips,
             banned_fingerprints: adminData.banned_fingerprints
         });
-        res.json({ success: true, message: `${type} ${value} đã được ban vĩnh viễn.` });
-
+        res.json({ success: true, message: `Đã ban thành công ${type}: ${value}` });
     } catch (error) {
-        console.error('Lỗi khi ban:', error);
-        res.status(500).json({ error: 'Đã có lỗi xảy ra khi ban.' });
+        console.error(`Lỗi khi ban ${type}:`, error);
+        res.status(500).json({ error: 'Đã có lỗi xảy ra ở phía máy chủ.' });
     }
 });
 
-
-// API để unban một IP hoặc Fingerprint
+// API để unban một IP hoặc Fingerprint (MỚI THÊM)
 app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
     if (!db) {
         return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
@@ -550,51 +555,49 @@ app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
 
     try {
         const adminData = await getAdminData();
-        let updated = false;
+        let message = '';
+        let unbanned = false;
 
         if (type === 'ip') {
-            if (adminData.banned_ips && adminData.banned_ips[value]) {
+            if (adminData.banned_ips[value]) {
                 delete adminData.banned_ips[value];
-                updated = true;
-                console.log(`[ADMIN UNBAN] IP ${value} đã được unban.`);
+                unbanned = true;
+                message = `Đã unban thành công IP: ${value}.`;
+                console.log(`[ADMIN UNBAN] IP ${value} đã được gỡ ban.`);
+            } else {
+                message = `IP: ${value} không bị ban.`;
             }
         } else if (type === 'fingerprint') {
-            if (adminData.banned_fingerprints && adminData.banned_fingerprints[value]) {
+            if (adminData.banned_fingerprints[value]) {
                 delete adminData.banned_fingerprints[value];
-                updated = true;
-                console.log(`[ADMIN UNBAN] Fingerprint ${value} đã được unban.`);
+                unbanned = true;
+                message = `Đã unban thành công Fingerprint: ${value}.`;
+                console.log(`[ADMIN UNBAN] Fingerprint ${value} đã được gỡ ban.`);
+            } else {
+                message = `Fingerprint: ${value} không bị ban.`;
             }
         } else {
-            return res.status(400).json({ error: 'Loại unban không hợp lệ. Chỉ chấp nhận "ip" hoặc "fingerprint".' });
+            return res.status(400).json({ error: 'Loại unban không hợp lệ.' });
         }
 
-        if (updated) {
+        if (unbanned) {
             await updateAdminData({
                 banned_ips: adminData.banned_ips,
                 banned_fingerprints: adminData.banned_fingerprints
             });
-            res.json({ success: true, message: `${type} ${value} đã được unban.` });
-        } else {
-            res.status(404).json({ error: `${type} ${value} không tìm thấy trong danh sách bị ban.` });
         }
-
+        
+        res.json({ success: true, message });
     } catch (error) {
-        console.error('Lỗi khi unban:', error);
-        res.status(500).json({ error: 'Đã có lỗi xảy ra khi unban.' });
+        console.error(`Lỗi khi unban ${type}:`, error);
+        res.status(500).json({ error: 'Đã có lỗi xảy ra ở phía máy chủ.' });
     }
 });
 
-
-// --- 7. KHỞI ĐỘNG SERVER ---
-// Bọc việc khởi động server trong một hàm async để đảm bảo Firebase được khởi tạo trước
-async function startServer() {
-    console.log('Server Startup: Bắt đầu khởi động server...');
-    await initializeFirebaseAdmin(); // Đảm bảo Firebase được khởi tạo hoàn chỉnh
-    console.log('Server Startup: Firebase Admin SDK đã khởi tạo xong, chuẩn bị lắng nghe cổng.');
-
-    app.listen(PORT, '0.0.0.0', () => {
-        console.log(`🚀 Server đang chạy tại http://0.0.0.0:${PORT}`);
+// Khởi động server
+(async () => {
+    await initializeFirebaseAdmin();
+    app.listen(PORT, () => {
+        console.log(`Server Backend Doraemon đang chạy tại cổng ${PORT}`);
     });
-}
-
-startServer(); // Gọi hàm khởi động server
+})();

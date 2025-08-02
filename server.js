@@ -596,8 +596,16 @@ app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
 
 // Khởi động server
 (async () => {
+    // Attempt to initialize Firebase Admin SDK
     await initializeFirebaseAdmin();
+
+    // The app will now listen on the port regardless of Firebase initialization status.
+    // If Firebase initialization failed, the `db` variable will be null, and
+    // database-dependent functions will handle the error gracefully.
     app.listen(PORT, () => {
         console.log(`Server Backend Doraemon đang chạy tại cổng ${PORT}`);
+        if (!firebaseAdminInitialized) {
+            console.warn('CẢNH BÁO: Firestore không khả dụng. Các chức năng cần database sẽ không hoạt động.');
+        }
     });
 })();

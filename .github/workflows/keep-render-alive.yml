@@ -1,13 +1,40 @@
-name: ⏰ Keep Render Server Alive
+name: ⏰ Keep Render Server Alive + Gmail Alert
 
 on:
   schedule:
-    - cron: '*/5 * * * *'  # Mỗi 5 phút
-  workflow_dispatch:        # Cho phép chạy thủ công
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
+      - name: 📦 Cài msmtp để gửi Gmail
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y msmtp
+
       - name: 🔁 Ping Render backend
-        run: curl -s https://doraemon-backend.onrender.com/
+        run: |
+          echo "⏰ Đang ping server Doraemon..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://doraemon-backend.onrender.com/)
+          if [ "$STATUS" -ne 200 ]; then
+            echo "❌ Server lỗi: $STATUS"
+            echo -e "🚨 Máy thời gian báo động!\nServer Doraemon đang ngủ quên 😴\nStatus code: $STATUS\nThời gian: $(date)" > alert.txt
+
+            echo "defaults
+account gmail
+host smtp.gmail.com
+port 587
+auth on
+user vieth8101@gmail.com
+password ${{ secrets.SMTP_PASS }}
+from vieth8101@gmail.com
+tls on
+tls_starttls on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+logfile ~/.msmtp.log" > ~/.msmtprc
+
+            msmtp -a gmail vieth8101@gmail.com < alert.txt
+          else
+            echo "✅ Server OK: $STATUS"

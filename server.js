@@ -483,20 +483,48 @@ app.get('/admin/stats', authenticateAdminToken, async (req, res) => {
     }
     try {
         const adminData = await getAdminData();
+        
+        const permanentBannedIps = {};
+        const temporaryBannedIps = {};
+        if (adminData.banned_ips) {
+            Object.entries(adminData.banned_ips).forEach(([ip, expiry]) => {
+                if (expiry === PERMANENT_BAN_VALUE) {
+                    permanentBannedIps[ip] = expiry;
+                } else {
+                    temporaryBannedIps[ip] = expiry;
+                }
+            });
+        }
+
+        const permanentBannedFingerprints = {};
+        const temporaryBannedFingerprints = {};
+        if (adminData.banned_fingerprints) {
+            Object.entries(adminData.banned_fingerprints).forEach(([fpId, banTime]) => {
+                if (banTime === PERMANENT_BAN_VALUE) {
+                    permanentBannedFingerprints[fpId] = banTime;
+                } else {
+                    temporaryBannedFingerprints[fpId] = banTime;
+                }
+            });
+        }
+        
         res.json({
             success: true,
             stats: {
                 total_requests: adminData.total_requests || 0,
                 total_failed_recaptcha: adminData.total_failed_recaptcha || 0
             },
-            banned_ips: adminData.banned_ips || {},
-            banned_fingerprints: adminData.banned_fingerprints || {}
+            permanent_banned_ips: permanentBannedIps,
+            temporary_banned_ips: temporaryBannedIps,
+            permanent_banned_fingerprints: permanentBannedFingerprints,
+            temporary_banned_fingerprints: temporaryBannedFingerprints
         });
     } catch (error) {
         console.error('Lỗi khi lấy thống kê admin:', error);
         res.status(500).json({ error: 'Đã có lỗi xảy ra khi lấy dữ liệu admin.' });
     }
 });
+
 
 // API để ban một IP hoặc Fingerprint (MỚI THÊM)
 app.post('/admin/ban', authenticateAdminToken, async (req, res) => {

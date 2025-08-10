@@ -2,39 +2,25 @@ name: ⏰ Keep Render Server Alive + Gmail Alert
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
-  workflow_dispatch:
+    - cron: '*/5 * * * *'  # chạy mỗi 5 phút
+  workflow_dispatch:       # cho phép chạy thủ công
 
 jobs:
-  ping:
+  ping-render:
     runs-on: ubuntu-latest
+
     steps:
-      - name: 📦 Cài msmtp để gửi Gmail
+      - name: Ping Render Server
+        id: ping
         run: |
-          sudo apt-get update
-          sudo apt-get install -y msmtp
+          curl -s --max-time 10 https://doraemon-backend.onrender.com || echo "Server is down"
 
-      - name: 🔁 Ping Render backend
+      - name: Send Gmail Alert if Server is Down
+        if: failure()
         run: |
-          echo "⏰ Đang ping server Doraemon..."
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://doraemon-backend.onrender.com/)
-          if [ "$STATUS" -ne 200 ]; then
-            echo "❌ Server lỗi: $STATUS"
-            echo -e "🚨 Máy thời gian báo động!\nServer Doraemon đang ngủ quên 😴\nStatus code: $STATUS\nThời gian: $(date)" > alert.txt
-
-            echo "defaults
-account gmail
-host smtp.gmail.com
-port 587
-auth on
-user vieth8101@gmail.com
-password ${{ secrets.SMTP_PASS }}
-from vieth8101@gmail.com
-tls on
-tls_starttls on
-tls_trust_file /etc/ssl/certs/ca-certificates.crt
-logfile ~/.msmtp.log" > ~/.msmtprc
-
-            msmtp -a gmail vieth8101@gmail.com < alert.txt
-          else
-            echo "✅ Server OK: $STATUS"
+          echo "Subject: 🚨 Render Server Down" > email.txt
+          echo "The server at https://doraemon-backend.onrender.com is not responding." >> email.txt
+          msmtp --host=smtp.gmail.com --port=587 --auth=on \
+            --user=vieth8101@gmail.com --from=vieth8101@gmail.com \
+            --passwordeval="echo ${{ secrets.SMTP_PASS }}" \
+            --tls=on vieth8101@gmail.com < email.txt

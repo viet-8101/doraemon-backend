@@ -13,7 +13,7 @@ jobs:
       - name: Ping Render Server
         id: ping
         run: |
-          curl -s --max-time 10 https://404 || echo "Server is down"
+          curl -s --max-time 10 https://this-does-not-exist.com || exit 1
 
       - name: Send Gmail Alert if Server is Down
         if: failure()

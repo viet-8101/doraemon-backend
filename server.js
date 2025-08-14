@@ -31,7 +31,6 @@ app.use(cors({
         'https://viet-8101.github.io',
         'https://viet-8101.github.io/admin-dashboard-doraemon/', // URL cụ thể của Dashboard trên GitHub Pages
         'http://localhost:5173',      // Cổng mặc định của Vite dev server (giữ lại để phát triển cục bộ)
-        'http://localhost:3001',      // Cổng của frontend có thể khác 3000 (nếu bạn dùng)
         'https://admin-dashboard-doraemon.onrender.com',
         'http://localhost:3000',      // Cổng của backend mặc định (nếu bạn dùng)
         // Thêm URL Firebase Hosting của bạn vào đây khi bạn triển khai frontend lên Firebase (nếu có)
@@ -637,3 +636,4 @@ app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
         }
     });
 })();
+

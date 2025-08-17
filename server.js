@@ -4,12 +4,12 @@ import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
-import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
+import jwt from 'jsonwebtoken'; // Để tạo và xác minh token admin
+import crypto from 'crypto'; // Cần cho crypto.randomBytes nếu JWT_SECRET không có trong ENV
 
 // Firebase Admin SDK imports
 import admin from 'firebase-admin';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore'; // Sử dụng FieldValue từ admin SDK
 
 dotenv.config();
 
@@ -29,13 +29,16 @@ const PORT = process.env.PORT || 3000;
 app.use(cors({
     origin: [
         'https://viet-8101.github.io',
-        'https://viet-8101.github.io/admin-dashboard-doraemon/',
-        'http://localhost:5173',
+        'https://viet-8101.github.io/admin-dashboard-doraemon/', // URL cụ thể của Dashboard trên GitHub Pages
+        'http://localhost:5173',      // Cổng mặc định của Vite dev server (giữ lại để phát triển cục bộ)
         'https://admin-dashboard-doraemon.onrender.com',
-        'http://localhost:3000',
-    ],
-    credentials: true,
+        'http://localhost:3000',      // Cổng của backend mặc định (nếu bạn dùng)
+        // Thêm URL Firebase Hosting của bạn vào đây khi bạn triển khai frontend lên Firebase (nếu có)
+        // Ví dụ: 'https://your-firebase-project-id.web.app',
+        // 'https://your-firebase-project-id.firebaseapp.com'
+    ]
 }));
+
 app.use(express.json());
 app.set('trust proxy', 1);
 
@@ -52,39 +55,73 @@ app.use((req, res, next) => {
     next();
 });
 
-// --- 3. KẾT NỐI FIREBASE ADMIN SDK VÀ FIRESTORE ---
-let db = null;
-let firebaseAdminInitialized = false;
+// --- 3. BIẾN BẢO MẬT VÀ CẤU HÌNH ADMIN ---
+const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
 
-const initializeFirebaseAdmin = async () => {
-    try {
-        if (!process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
-            console.error('Lỗi: Thiếu biến môi trường FIREBASE_SERVICE_ACCOUNT_KEY.');
-            return;
-        }
+if (!RECAPTCHA_SECRET_KEY || !ADMIN_USERNAME || !ADMIN_PASSWORD) {
+    console.error('Lỗi: RECAPTCHA_SECRET_KEY, ADMIN_USERNAME hoặc ADMIN_PASSWORD chưa được đặt trong biến môi trường!');
+}
 
-        const serviceAccount = JSON.parse(
-            Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_KEY, 'base64').toString('utf-8')
-        );
+// --- KHỞI TẠO FIREBASE ADMIN SDK ---
+let db; // Firestore instance
+let firebaseAdminInitialized = false; // Biến cờ để theo dõi trạng thái khởi tạo
 
-        if (!admin.apps.length) {
-            admin.initializeApp({
-                credential: admin.credential.cert(serviceAccount)
-            });
-        }
-
+async function initializeFirebaseAdmin() {
+    console.log('Firebase Init: Bắt đầu khởi tạo Firebase Admin SDK...');
+    // Đảm bảo chỉ khởi tạo một lần
+    if (admin.apps.length > 0) {
         db = getFirestore();
         firebaseAdminInitialized = true;
-        console.log('Kết nối Firebase Admin SDK thành công.');
-    } catch (error) {
-        console.error('Lỗi khi kết nối Firebase Admin SDK:', error);
-        firebaseAdminInitialized = false;
-        db = null; // Ensure db is null on failure
+        console.log('Firebase Init: Firebase Admin SDK đã được khởi tạo trước đó.');
+        return;
     }
-};
+
+    const serviceAccountKeyString = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    if (!serviceAccountKeyString) {
+        console.error('Firebase Init: Lỗi: FIREBASE_SERVICE_ACCOUNT_KEY chưa được đặt trong biến môi trường! Firestore sẽ không hoạt động.');
+        db = null;
+        return;
+    }
+
+    let serviceAccount;
+    try {
+        serviceAccount = JSON.parse(serviceAccountKeyString);
+        console.log('Firebase Init: Firebase Service Account Key được đọc từ ENV.');
+    } catch (e) {
+        console.error('Firebase Init: Lỗi: FIREBASE_SERVICE_ACCOUNT_KEY không phải là chuỗi JSON hợp lệ.', e);
+        db = null;
+        return;
+    }
+
+    try {
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
+        db = getFirestore(); // Lấy Firestore instance từ Admin SDK
+        firebaseAdminInitialized = true;
+        console.log('Firebase Init: Firebase Admin SDK đã được khởi tạo và kết nối với Firestore.');
+    } catch (error) {
+        console.error('Firebase Init: Lỗi khi khởi tạo Firebase Admin SDK:', error);
+        db = null;
+    }
+}
 
 // Lấy app_id từ môi trường Render (hoặc dùng mặc định nếu chạy cục bộ không có)
-const appId = process.env.RENDER_SERVICE_ID || 'default-render-app-id';
+const appId = process.env.RENDER_SERVICE_ID || 'default-render-app-id'; // Render cung cấp RENDER_SERVICE_ID
+
+// --- 4. TỪ ĐIỂN DORAEMON ---
+const tuDienDoraemon = {
+    "cái loa biết đi": "Jaian", "thánh chảnh": "Suneo", "cục nợ quốc dân": "Nobita", "trùm chém gió": "Suneo", "boss ăn vặt": "Doraemon", "siêu nhân gục ngã": "Nobita", "máy phát kẹo": "Doraemon", "ổ bom di động": "Jaian", "thánh phá đồ": "Nobita", "chuyên gia gây họa": "Nobita", "nhà tài trợ nước mắt": "mẹ Nobita", "lò luyện điểm 0": "lớp học của Nobita", "trùm thất tình": "Nobita", "đứa trẻ cuối cùng của mushika": "Micca", "máy ATM biết đi": "Doraemon", "trí tuệ nhân tạo có tâm": "Doraemon", "con tinh tinh": "Jaian", "con khỉ đột": "Jaian", "khỉ đột": "Jaian", "tinh tinh": "Jaian", "con cáo": "Suneo", "cáo": "Suneo", "bạch tuộc": "Noise", "quần dài": "2 con cá trắm đen đc làm ở Pháp rất là mắc tiền (của Suneo)", "mụ phù thủy": "mẹ của Nobita", "tên ngốc hậu hậu": "Nobita", "tên robinson phiền phức": "Nobita", "thiên tài ngủ": "Nobita", "diễn viên suất sắc": "Nobita", "bậc thầy năn nỉ": "Nobita", "thiên tài thắt dây": "Nobita", "tay vua súng": "Nobita", "xe buýt": "Nobita", "xe bus": "Nobita", "mèo máy": "Doraemon", "mỏ nhọn": "Suneo", "lồi rốn": "Jaian", "yên ắng": "nhà Shizuka", "hình tròn": "bánh rán dorayaki", "kẻ tham lam": "Jaian", "hai người nổi tiếng ham ăn": "Jaian và Suneo", "điểm đen": "điểm 0", "bàn tay vàng trong làng ngáo ngơ": "Nobita", "cục tạ quốc dân": "Nobita", "đại ca sân trường": "Jaian", "người mẫu sừng sỏ": "Suneo", "cô gái tắm mỗi tập": "Shizuka", "vua bánh rán": "Doraemon", "thánh cầu cứu": "Nobita", "người đến từ tương lai": "Doraemon", "cây ATM sống": "Doraemon", "lồng tiếng động đất": "Jaian", "diễn viên chính của bi kịch": "Nobita", "fan cuồng công nghệ": "Suneo", "kẻ lười biếng nhỏ bé": "Nobita", "chồn xanh nhỏ đáng yêu": "Doraemon", "bình yên trước cơn bão": "nhà Shizuka", "cậu bé sáo lạc điệu": "Nobita", "loa phóng thanh biết đi": "Jaian", "trùm phá nốt": "Nobita", "người cứu âm nhạc địa cầu": "Doraemon", "quái vật hút âm": "bào tử noise", "người bạn đến từ hành tinh âm nhạc": "Micca", "thánh phá bản nhạc": "Nobita", "cây sáo truyền thuyết": "cây sáo dọc của mushika", "bản nhạc giải cứu trái đất": "bản giao hưởng địa cầu", "phi công nghiệp dư": "Nobita", "vùng đất trong mơ": "Utopia", "cư dân đám mây": "người sống ở Utopia", "nhà trên trời view đẹp": "Utopia", "người bạn Utopia": "Sonya", "trùm điều khiển thời tiết": "quản lý Utopia", "mặt trăng bay lạc": "Utopia", "chuyến phiêu lưu trên trời": "hành trình của nhóm Nobita", "lâu đài mây thần bí": "trung tâm điều hành Utopia", "trùm chấn động bầu trời": "Suneo lái máy bay", "cậu bé bay không bằng lái": "Nobita", "thánh nhảy moonwalk ngoài vũ trụ": "Nobita", "chuyên gia té không trọng lực": "Nobita", "trạm vũ trụ di động": "tàu của Doraemon", "người bạn tai dài trên mặt trăng": "Luca", "cư dân mặt trăng bí ẩn": "tộc người Espal", "đội thám hiểm mặt trăng": "nhóm Nobita", "mặt trăng giả tưởng": "thế giới do bảo bối tạo ra", "cuộc chiến không trọng lực": "trận đấu trên mặt trăng", "lũ bạn ngoài hành tinh đáng yêu": "Luca và đồng bọn", "bầu trời đêm đầy ảo mộng": "khung cảnh mặt trăng", "cậu bé lười biếng nhất thành phố": "Nobita", "cậu bé xấu tính nhất thành phố": "Jaian", "nhạc sĩ vũ trụ": "Trupet", "nhà soạn nhạc vĩ đại": "Trupet", "người sáng tác giao hưởng địa cầu": "Trupet", "chủ nhân bản giao hưởng địa cầu": "Trupet", "nhà sáng tạo âm nhạc vũ trụ": "Trupet", "nhạc sĩ bảo vệ hòa bình âm nhạc": "Trupet", "rùa siêu tốc vũ trụ": "Moto", "rùa vũ trụ có mai thép": "Moto", "rùa siêu bền": "Moto", "tốc độ vũ trụ từ mai rùa": "Moto", "vũ trụ đua rùa": "Moto", "con rùa nhanh nhất trong không gian": "Moto", "viên đạn của đại bác không khí": "Moto"
+};
+
+// --- 5. HỖ TRỢ BẢO MẬT VÀ FIREBASE ---
+const BAN_DURATION_MS = 12 * 60 * 60 * 1000; // 12 giờ cho ban tạm thời (từ reCAPTCHA)
+const PERMANENT_BAN_VALUE = Number.MAX_SAFE_INTEGER; // Giá trị biểu thị ban vĩnh viễn
+const FAILED_ATTEMPTS_THRESHOLD = 5;
+const FAILED_ATTEMPTS_RESET_MS = 30 * 60 * 1000; // Đã thay đổi: reset count sau 30 phút
 
 // Lấy tham chiếu đến collection admin_data
 const getAdminDataDocRef = () => {
@@ -92,15 +129,16 @@ const getAdminDataDocRef = () => {
         console.error('Firestore chưa được khởi tạo hoặc không khả dụng. Không thể truy cập admin_data.');
         return null;
     }
-    return db.collection('artifacts').doc(appId).collection('public').doc('data').collection('admin_data').doc('main_data');
+    // Sử dụng appId để tạo đường dẫn collection động
+    return db.collection('artifacts').doc(appId).collection('public').doc('data').collection('admin_data').doc('main_data'); // Thay đổi đường dẫn cho Admin SDK
 };
 
-const getAdminData = async () => {
+async function getAdminData() {
     const docRef = getAdminDataDocRef();
     if (!docRef) return {};
 
     try {
-        const docSnap = await docRef.get();
+        const docSnap = await docRef.get(); // Sử dụng .get() cho Admin SDK
         if (docSnap.exists) {
             return docSnap.data();
         } else {
@@ -111,44 +149,27 @@ const getAdminData = async () => {
                 total_failed_recaptcha: 0,
                 failedAttempts: {}
             };
-            await docRef.set(initialData);
+            await docRef.set(initialData); // Sử dụng .set() cho Admin SDK
             return initialData;
         }
     } catch (error) {
         console.error('Lỗi khi lấy admin data từ Firestore:', error);
         return {};
     }
-};
+}
 
-const updateAdminData = async (dataToUpdate) => {
+async function updateAdminData(dataToUpdate) {
     const docRef = getAdminDataDocRef();
     if (!docRef) {
         console.error('Firestore chưa được khởi tạo hoặc không khả dụng. Không thể cập nhật admin_data.');
         return;
     }
     try {
-        await docRef.set(dataToUpdate, { merge: true });
+        await docRef.update(dataToUpdate); // Sử dụng .update() cho Admin SDK
     } catch (error) {
         console.error('Lỗi khi cập nhật admin data vào Firestore:', error);
     }
-};
-
-// --- 4. BIẾN BẢO MẬT VÀ CẤU HÌNH ADMIN ---
-const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
-const TFA_SECRET = process.env.TFA_SECRET || crypto.randomBytes(32).toString('hex');
-
-if (!RECAPTCHA_SECRET_KEY || !ADMIN_USERNAME || !ADMIN_PASSWORD || !TFA_SECRET) {
-    console.error('Lỗi: Thiếu một trong các biến môi trường cần thiết: RECAPTCHA_SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD hoặc TFA_SECRET!');
 }
-
-// --- 5. HỖ TRỢ BẢO MẬT VÀ CÁC HÀM TIỆN ÍCH ---
-const BAN_DURATION_MS = 12 * 60 * 60 * 1000; // 12 giờ cho ban tạm thời (từ reCAPTCHA)
-const PERMANENT_BAN_VALUE = Number.MAX_SAFE_INTEGER;
-const FAILED_ATTEMPTS_THRESHOLD = 5;
-const FAILED_ATTEMPTS_RESET_MS = 30 * 60 * 1000;
 
 // Hàm lấy IP thực của client từ X-Forwarded-For hoặc req.ip
 function getClientIp(req) {
@@ -192,18 +213,19 @@ async function handleFailedAttempt(ip, visitorId) {
 
     let data = adminData.failedAttempts?.[ip] || { count: 0, lastFailTime: 0 };
 
-    if (now - data.lastFailTime > FAILED_ATTEMPTS_RESET_MS) {
-        data = { count: 1, lastFailTime: now };
+    if (now - data.lastFailTime > FAILED_ATTEMPTS_RESET_MS) { // Nếu thời gian giữa các lần thất bại lớn hơn ngưỡng reset
+        data = { count: 1, lastFailTime: now }; // Đặt lại số lần thất bại về 1
     } else {
-        data.count++;
+        data.count++; // Tăng số lần thất bại
         data.lastFailTime = now;
     }
 
-    if (db) {
+    if (db) { // Chỉ cập nhật nếu Firestore đã được khởi tạo
         await updateAdminData({
             [`failedAttempts.${ip}`]: data,
-            total_failed_recaptcha: FieldValue.increment(1)
+            total_failed_recaptcha: FieldValue.increment(1) // Sử dụng FieldValue.increment
         });
+        // LOG MỚI ĐƯỢC THÊM VÀO ĐÂY
         console.log(`[FAILED-ATTEMPT-RECORDED] Lần thất bại mới đã được ghi nhận cho IP: ${ip}, tổng số lần là: ${data.count}`);
     } else {
         console.warn('Firestore chưa được khởi tạo, không thể ghi nhận thất bại reCAPTCHA vào Firestore.');
@@ -212,17 +234,18 @@ async function handleFailedAttempt(ip, visitorId) {
     console.warn(`[RECAPTCHA FAIL] IP: ${ip} thất bại lần ${data.count}`);
 
     if (data.count >= FAILED_ATTEMPTS_THRESHOLD) {
-        const banExpiresAt = now + BAN_DURATION_MS;
+        const banExpiresAt = now + BAN_DURATION_MS; // Vẫn dùng BAN_DURATION_MS cho ban tạm thời từ reCAPTCHA
         currentBannedIps[ip] = banExpiresAt;
         if (visitorId) {
+            // Fingerprint từ reCAPTCHA cũng sẽ bị ban tạm thời
             currentBannedFingerprints[visitorId] = banExpiresAt;
         }
         
-        if (db) {
+        if (db) { // Chỉ cập nhật nếu Firestore đã được khởi tạo
             await updateAdminData({
                 banned_ips: currentBannedIps,
                 banned_fingerprints: currentBannedFingerprints,
-                [`failedAttempts.${ip}`]: FieldValue.delete()
+                [`failedAttempts.${ip}`]: FieldValue.delete() // Xóa mục failedAttempts khi ban
             });
         } else {
              console.warn('Firestore chưa được khởi tạo, không thể cập nhật danh sách ban.');
@@ -239,12 +262,15 @@ async function securityMiddleware(req, res, next) {
     const ip = normalizeIp(clientIpRaw);
     const visitorId = req.body.visitorId;
 
+    // Log chi tiết để kiểm tra trạng thái dữ liệu
     console.log(`[SECURITY-CHECK] Bắt đầu kiểm tra IP: ${ip}, VisitorId: ${visitorId}`);
-
     const adminData = await getAdminData();
     const currentBannedIps = adminData.banned_ips || {};
     const currentBannedFingerprints = adminData.banned_fingerprints || {};
-    
+    console.log(`[SECURITY-CHECK-DATA] Dữ liệu ban hiện tại cho IP ${ip}:`, currentBannedIps[ip] ? new Date(currentBannedIps[ip]).toLocaleString('vi-VN') : 'Không bị ban');
+    console.log(`[SECURITY-CHECK-DATA] Dữ liệu ban hiện tại cho VisitorId ${visitorId}:`, currentBannedFingerprints[visitorId] ? new Date(currentBannedFingerprints[visitorId]).toLocaleString('vi-VN') : 'Không bị ban');
+
+
     // Kiểm tra banned fingerprint
     if (visitorId && currentBannedFingerprints[visitorId]) {
         const banExpiresAt = currentBannedFingerprints[visitorId];
@@ -252,6 +278,7 @@ async function securityMiddleware(req, res, next) {
             const banMessage = banExpiresAt === PERMANENT_BAN_VALUE ? 'vĩnh viễn' : `tạm thời. Vui lòng thử lại sau: ${new Date(banExpiresAt).toLocaleString('vi-VN')}`;
             return res.status(403).json({ error: `Truy cập của bạn đã bị chặn ${banMessage}.` });
         } else if (Date.now() >= banExpiresAt) {
+            // Fingerprint đã hết thời gian ban, gỡ ban tự động
             delete currentBannedFingerprints[visitorId];
             if (db) {
                 await updateAdminData({ banned_fingerprints: currentBannedFingerprints });
@@ -267,6 +294,7 @@ async function securityMiddleware(req, res, next) {
             const banMessage = banExpiresAt === PERMANENT_BAN_VALUE ? 'vĩnh viễn' : `tạm thời. Vui lòng thử lại sau: ${new Date(banExpiresAt).toLocaleString('vi-VN')}`;
             return res.status(403).json({ error: `IP của bạn đang bị chặn ${banMessage}.` });
         } else if (Date.now() >= banExpiresAt) {
+            // IP đã hết thời gian ban, gỡ ban tự động
             delete currentBannedIps[ip];
             if (db) {
                 await updateAdminData({ banned_ips: currentBannedIps });
@@ -278,242 +306,285 @@ async function securityMiddleware(req, res, next) {
     next();
 }
 
-// Middleware xác thực admin
-const authenticateAdmin = (req, res, next) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) {
-        return res.status(401).json({ error: 'Không tìm thấy Token xác thực.' });
-    }
-    const token = authHeader.split(' ')[1];
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        if (decoded.role === 'admin') {
-            req.user = decoded;
-            next();
-        } else {
-            res.status(403).json({ error: 'Truy cập bị từ chối, bạn không có quyền Admin.' });
-        }
-    } catch (err) {
-        res.status(403).json({ error: 'Token không hợp lệ hoặc đã hết hạn.' });
-    }
-};
+// Middleware xác thực Admin JWT
+function authenticateAdminToken(req, res, next) {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
 
-// --- 6. TỪ ĐIỂN DORAEMON ---
-const tuDienDoraemon = {
-    "cái loa biết đi": "Jaian", "thánh chảnh": "Suneo", "cục nợ quốc dân": "Nobita", "trùm chém gió": "Suneo", "boss ăn vặt": "Doraemon", "siêu nhân gục ngã": "Nobita", "máy phát kẹo": "Doraemon", "ổ bom di động": "Jaian", "thánh phá đồ": "Nobita", "chuyên gia gây họa": "Nobita", "nhà tài trợ nước mắt": "mẹ Nobita", "lò luyện điểm 0": "lớp học của Nobita", "trùm thất tình": "Nobita", "đứa trẻ cuối cùng của mushika": "Micca", "máy ATM biết đi": "Doraemon", "trí tuệ nhân tạo có tâm": "Doraemon", "con tinh tinh": "Jaian", "con khỉ đột": "Jaian", "khỉ đột": "Jaian", "tinh tinh": "Jaian", "con cáo": "Suneo", "cáo": "Suneo", "bạch tuộc": "Noise", "quần dài": "2 con cá trắm đen đc làm ở Pháp rất là mắc tiền (của Suneo)", "mụ phù thủy": "mẹ của Nobita", "tên ngốc hậu hậu": "Nobita", "tên robinson phiền phức": "Nobita", "thiên tài ngủ": "Nobita", "diễn viên suất sắc": "Nobita", "bậc thầy năn nỉ": "Nobita", "thiên tài thắt dây": "Nobita", "tay vua súng": "Nobita", "xe buýt": "Nobita", "xe bus": "Nobita", "mèo máy": "Doraemon", "mỏ nhọn": "Suneo", "lồi rốn": "Jaian", "yên ắng": "nhà Shizuka", "hình tròn": "bánh rán dorayaki", "kẻ tham lam": "Jaian", "hai người nổi tiếng ham ăn": "Jaian và Suneo", "điểm đen": "điểm 0", "bàn tay vàng trong làng ngáo ngơ": "Nobita", "cục tạ quốc dân": "Nobita", "đại ca sân trường": "Jaian", "người mẫu sừng sỏ": "Suneo", "cô gái tắm mỗi tập": "Shizuka", "vua bánh rán": "Doraemon", "thánh cầu cứu": "Nobita", "người đến từ tương lai": "Doraemon", "cây ATM sống": "Doraemon", "lồng tiếng động đất": "Jaian", "diễn viên chính của bi kịch": "Nobita", "fan cuồng công nghệ": "Suneo", "kẻ lười biếng nhỏ bé": "Nobita", "chồn xanh nhỏ đáng yêu": "Doraemon", "bình yên trước cơn bão": "nhà Shizuka", "cậu bé sáo lạc điệu": "Nobita", "loa phóng thanh biết đi": "Jaian", "trùm phá nốt": "Nobita", "người cứu âm nhạc địa cầu": "Doraemon", "quái vật hút âm": "bào tử noise", "người bạn đến từ hành tinh âm nhạc": "Micca", "thánh phá bản nhạc": "Nobita", "cây sáo truyền thuyết": "cây sáo dọc của mushika", "bản nhạc giải cứu trái đất": "bản giao hưởng địa cầu", "phi công nghiệp dư": "Nobita", "vùng đất trong mơ": "Utopia", "cư dân đám mây": "người sống ở Utopia", "nhà trên trời view đẹp": "Utopia", "người bạn Utopia": "Sonya", "trùm điều khiển thời tiết": "quản lý Utopia", "mặt trăng bay lạc": "Utopia", "chuyến phiêu lưu trên trời": "hành trình của nhóm Nobita", "lâu đài mây thần bí": "trung tâm điều hành Utopia", "trùm chấn động bầu trời": "Suneo lái máy bay", "cậu bé bay không bằng lái": "Nobita", "thánh nhảy moonwalk ngoài vũ trụ": "Nobita", "chuyên gia té không trọng lực": "Nobita", "trạm vũ trụ di động": "tàu của Doraemon", "người bạn tai dài trên mặt trăng": "Luca", "cư dân mặt trăng bí ẩn": "tộc người Espal", "đội thám hiểm mặt trăng": "nhóm Nobita", "mặt trăng giả tưởng": "thế giới do bảo bối tạo ra", "cuộc chiến không trọng lực": "trận đấu trên mặt trăng", "lũ bạn ngoài hành tinh đáng yêu": "Luca và đồng bọn", "bầu trời đêm đầy ảo mộng": "khung cảnh mặt trăng", "cậu bé lười biếng nhất thành phố": "Nobita", "cậu bé xấu tính nhất thành phố": "Jaian", "nhạc sĩ vũ trụ": "Trupet", "nhà soạn nhạc vĩ đại": "Trupet", "người sáng tác giao hưởng địa cầu": "Trupet", "chủ nhân bản giao hưởng địa cầu": "Trupet", "nhà sáng tạo âm nhạc vũ trụ": "Trupet", "nhạc sĩ bảo vệ hòa bình âm nhạc": "Trupet", "rùa siêu tốc vũ trụ": "Moto", "rùa vũ trụ có mai thép": "Moto", "rùa siêu bền": "Moto", "tốc độ vũ trụ từ mai rùa": "Moto", "vũ trụ đua rùa": "Moto", "con rùa nhanh nhất trong không gian": "Moto", "viên đạn của đại bác không khí": "Moto"
-};
+    if (token == null) return res.status(401).json({ error: 'Không có token xác thực.' });
 
-// --- 7. CÁC ENDPOINT API ---
-
-// Endpoint kiểm tra trạng thái
-app.get('/status', (req, res) => {
-    res.json({
-        message: 'Backend Doraemon đang chạy!',
-        dbStatus: db ? 'Kết nối thành công' : 'Không kết nối được',
-        firebaseAdminInitialized: firebaseAdminInitialized
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) return res.status(403).json({ error: 'Token không hợp lệ hoặc đã hết hạn.' });
+        req.user = user;
+        next();
     });
+}
+
+// --- 6. API ENDPOINTS ---
+
+app.get('/', (req, res) => {
+    res.status(200).send('Backend Doraemon đang chạy và hoạt động tốt!');
 });
 
-// Endpoint xác thực IP và Fingerprint (có thêm middleware bảo mật)
-app.post('/check-access', securityMiddleware, async (req, res) => {
-    const { ip, fingerprint, token, visitorId } = req.body;
-    if (!ip || !fingerprint || !token) {
-        return res.status(400).json({ error: 'Thiếu IP, Fingerprint, hoặc reCAPTCHA token.' });
+// --- Endpoint để lấy danh sách tất cả người dùng từ Firebase Authentication ---
+// Đây là endpoint mới cho UsersPage trên frontend
+app.get('/api/users', authenticateAdminToken, async (req, res) => { // Thêm authenticateAdminToken để bảo vệ endpoint này
+    if (!firebaseAdminInitialized || !admin.auth()) {
+        console.error('Firebase Admin SDK hoặc Auth chưa được khởi tạo. Không thể lấy người dùng.');
+        return res.status(503).json({ error: 'Dịch vụ xác thực người dùng chưa sẵn sàng.' });
     }
-
-    // Xác thực reCAPTCHA
-    const recaptchaUrl = `https://www.google.com/recaptcha/api/siteverify?secret=${RECAPTCHA_SECRET_KEY}&response=${token}`;
     try {
-        const recaptchaRes = await fetch(recaptchaUrl, { method: 'POST' });
-        const recaptchaData = await recaptchaRes.json();
+        // Lấy tất cả người dùng từ Firebase Authentication
+        const listUsersResult = await admin.auth().listUsers(1000); // Lấy tối đa 1000 người dùng
+        const users = listUsersResult.users.map(userRecord => ({
+            uid: userRecord.uid, // ID duy nhất của người dùng
+            email: userRecord.email,
+            displayName: userRecord.displayName || 'Người dùng mới', // displayName có thể null
+            photoURL: userRecord.photoURL,
+            emailVerified: userRecord.emailVerified,
+            disabled: userRecord.disabled,
+            createdAt: userRecord.metadata ? userRecord.metadata.creationTime : null,
+            lastSignInTime: userRecord.metadata ? userRecord.metadata.lastSignInTime : null,
+            // Bạn có thể thêm các trường khác từ userRecord nếu cần
+            // Ví dụ: phoneNumber: userRecord.phoneNumber
+        }));
 
-        if (!recaptchaData.success || recaptchaData.score < 0.5) {
-            console.warn(`[RECAPTCHA FAILED] Score: ${recaptchaData.score}, IP: ${ip}`);
-            await handleFailedAttempt(ip, visitorId);
-            return res.status(403).json({ error: 'Xác thực reCAPTCHA thất bại. Vui lòng thử lại.' });
-        }
+        res.status(200).json(users);
     } catch (error) {
-        console.error('Lỗi khi xác thực reCAPTCHA:', error);
-        return res.status(500).json({ error: 'Lỗi server khi xác thực reCAPTCHA.' });
+        console.error('Lỗi khi lấy danh sách người dùng từ Firebase Authentication:', error);
+        res.status(500).json({ message: 'Lỗi server khi lấy danh sách người dùng.', error: error.message });
     }
-
-    let adminData = null;
-    try {
-        adminData = await getAdminData();
-    } catch (error) {
-        console.error('Lỗi khi lấy dữ liệu Admin:', error);
-        return res.status(500).json({ error: 'Lỗi server khi kiểm tra quyền truy cập.' });
-    }
-
-    // Tăng tổng số yêu cầu
-    if (db) {
-        try {
-            await updateAdminData({
-                total_requests: FieldValue.increment(1)
-            });
-        } catch (error) {
-            console.error('Lỗi khi tăng total_requests:', error);
-        }
-    }
-
-    res.json({ accessGranted: true, message: 'Truy cập được cấp phép.' });
 });
 
-// Endpoint trả về từ điển
-app.get('/dictionary', (req, res) => {
-    res.json(tuDienDoraemon);
-});
 
-// Endpoint tra cứu từ điển
-app.post('/lookup', (req, res) => {
-    const { keyword } = req.body;
-    const sanitizedKeyword = sanitizeInput(keyword);
-    console.log(`[LOOKUP] Từ khóa được tra cứu: "${sanitizedKeyword}"`);
+app.post('/giai-ma', securityMiddleware, async (req, res) => {
+    const { userInput, recaptchaToken, visitorId } = req.body;
+    
+    const clientIpRaw = getClientIp(req);
+    const ip = normalizeIp(clientIpRaw);
 
-    const result = tuDienDoraemon[sanitizedKeyword];
-    if (result) {
-        res.json({ found: true, character: result });
+    if (db) { // Chỉ cập nhật nếu Firestore đã được khởi tạo
+        await updateAdminData({ total_requests: FieldValue.increment(1) }); // Sử dụng FieldValue.increment
     } else {
-        res.json({ found: false, message: "Không tìm thấy từ khóa này trong từ điển." });
+        console.warn('Firestore chưa được khởi tạo, không thể cập nhật total_requests.');
+    }
+
+    if (!userInput || !recaptchaToken) {
+        console.error('Lỗi 400: Thiếu dữ liệu đầu vào hoặc reCAPTCHA token.');
+        return res.status(400).json({ error: 'Thiếu dữ liệu đầu vào hoặc reCAPTCHA token.' });
+    }
+
+    const sanitizedUserInput = sanitizeInput(userInput);
+    if (!sanitizedUserInput) {
+        console.error('Lỗi 400: Dữ liệu đầu vào không hợp lệ hoặc quá dài sau khi làm sạch.');
+        return res.status(400).json({ error: 'Dữ liệu đầu vào không hợp lệ hoặc quá dài.' });
+    }
+
+    try {
+        const recaptchaVerificationUrl = `https://www.google.com/recaptcha/api/siteverify`;
+        const params = new URLSearchParams();
+        params.append('secret', RECAPTCHA_SECRET_KEY);
+        params.append('response', recaptchaToken);
+        if (ip) {
+            params.append('remoteip', ip);
+        }
+
+        console.log(`Đang gửi yêu cầu xác minh reCAPTCHA đến: ${recaptchaVerificationUrl}`);
+        console.log(`Với các tham số: ${params.toString()}`);
+
+        const verificationResponse = await fetch(recaptchaVerificationUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: params.toString()
+        });
+
+        if (!verificationResponse.ok) {
+            // Ghi log trạng thái HTTP và nội dung phản hồi nếu không thành công
+            const errorText = await verificationResponse.text();
+            console.error(`Lỗi HTTP từ reCAPTCHA API: ${verificationResponse.status} ${verificationResponse.statusText}. Phản hồi: ${errorText}`);
+            if (db) {
+                await handleFailedAttempt(ip, visitorId);
+            }
+            return res.status(verificationResponse.status).json({ error: 'Xác thực reCAPTCHA thất bại do lỗi HTTP từ Google.', details: errorText });
+        }
+
+        const recaptchaData = await verificationResponse.json();
+        console.log('Phản hồi reCAPTCHA nhận được:', recaptchaData);
+
+        if (!recaptchaData.success) {
+            if (db) { // Chỉ xử lý nếu Firestore đã được khởi tạo
+                await handleFailedAttempt(ip, visitorId);
+            } else {
+                console.warn('Firestore chưa được khởi tạo, không thể ghi nhận thất bại reCAPTCHA.');
+            }
+            console.error(`Xác thực reCAPTCHA không thành công. Lý do: ${JSON.stringify(recaptchaData['error-codes'])}`);
+            return res.status(401).json({ error: 'Xác thực không thành công. Vui lòng thử lại.', details: recaptchaData['error-codes'] });
+        }
+
+        // Nếu reCAPTCHA thành công, reset số lần thử thất bại của IP này
+        if (db) { // Chỉ xử lý nếu Firestore đã được khởi tạo
+            console.log(`Firestore Reset: Đang cố gắng xóa failedAttempts cho IP: ${ip}`);
+            try {
+                // Attempt to delete directly. Firestore will handle if it doesn't exist.
+                await updateAdminData({ [`failedAttempts.${ip}`]: FieldValue.delete() });
+                console.log(`Firestore Reset: failedAttempts cho IP: ${ip} đã được xóa thành công (hoặc không tồn tại để xóa).`);
+            } catch (deleteError) {
+                console.error(`Firestore Reset: Lỗi khi xóa failedAttempts cho IP ${ip}:`, deleteError);
+            }
+        } else {
+            console.warn('Firestore chưa được khởi tạo, không thể reset failedAttempts.');
+        }
+
+        console.log(`[SUCCESS] reCAPTcha valid cho IP: ${ip}`);
+
+        let text = sanitizedUserInput;
+        const entries = Object.entries(tuDienDoraemon).sort((a, b) => b[0].length - a[0].length);
+        let replaced = false;
+        
+        for (const [k, v] of entries) {
+            const re = new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+            if (text.match(re)) {
+                text = text.replace(re, v);
+                replaced = true;
+            }
+        }
+
+        const ketQua = replaced ? text : "Không tìm thấy từ khóa phù hợp trong từ điển.";
+
+        res.json({ success: true, ketQua });
+
+    } catch (error) {
+        console.error('Lỗi khi gọi reCAPTCHA API hoặc lỗi server:', error);
+        // Ghi log toàn bộ đối tượng lỗi để có thêm thông tin chi tiết
+        console.error(error); 
+        res.status(500).json({ error: 'Đã có lỗi xảy ra ở phía máy chủ khi xác thực reCAPTCHA.', details: error.message });
     }
 });
 
-// API ADMIN DASHBOARD
+// --- API ADMIN DASHBOARD ---
 
-// API Bước 1: Đăng nhập bằng tên đăng nhập/mật khẩu
+// API đăng nhập Admin
 app.post('/admin/login', async (req, res) => {
     const { username, password } = req.body;
 
     if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
-        const tfaCode = crypto.randomBytes(3).toString('hex').toUpperCase();
-        const expiryTime = Date.now() + 5 * 60 * 1000;
-        
-        const tfaToken = jwt.sign(
-            { username: ADMIN_USERNAME, tfaCode, expiryTime },
-            TFA_SECRET,
-            { expiresIn: '5m' } 
-        );
-
-        console.log(`Mã xác thực của bạn là ${tfaCode}. Mã đó có hiệu lực trong 5 phút.`);
-
-        res.json({ 
-            success: true, 
-            message: 'Đăng nhập thành công bước 1. Vui lòng kiểm tra log trên Render để lấy mã xác thực và nhập vào.', 
-            tfaToken 
-        });
+        const token = jwt.sign({ username: ADMIN_USERNAME, role: 'admin' }, JWT_SECRET, { expiresIn: '1h' });
+        res.json({ success: true, token });
     } else {
         res.status(401).json({ error: 'Tên đăng nhập hoặc mật khẩu không đúng.' });
     }
 });
 
-// API Bước 2: Xác thực mã 2FA
-app.post('/admin/verify-tfa', async (req, res) => {
-    const { tfaToken, tfaCode } = req.body;
-
-    if (!tfaToken || !tfaCode) {
-        return res.status(400).json({ error: 'Thiếu token hoặc mã xác thực.' });
-    }
-
-    try {
-        const decoded = jwt.verify(tfaToken, TFA_SECRET);
-
-        if (decoded.tfaCode === tfaCode.toUpperCase()) {
-            if (Date.now() > decoded.expiryTime) {
-                return res.status(401).json({ error: 'Mã xác thực đã hết hạn. Vui lòng đăng nhập lại.' });
-            }
-
-            const adminToken = jwt.sign({ username: ADMIN_USERNAME, role: 'admin' }, JWT_SECRET, { expiresIn: '1h' });
-            return res.json({ success: true, adminToken, message: 'Đăng nhập thành công!' });
-        } else {
-            return res.status(401).json({ error: 'Mã xác thực không đúng.' });
-        }
-    } catch (err) {
-        return res.status(403).json({ error: 'Phiên xác thực đã hết hạn hoặc không hợp lệ. Vui lòng đăng nhập lại.', details: err.message });
-    }
-});
-
-// Endpoint lấy dữ liệu dashboard (yêu cầu xác thực admin)
-app.get('/admin/dashboard-data', authenticateAdmin, async (req, res) => {
-    let adminData = null;
-    try {
-        adminData = await getAdminData();
-        if (!adminData) {
-            return res.status(500).json({ error: 'Không thể lấy dữ liệu dashboard.' });
-        }
-    } catch (error) {
-        console.error('Lỗi khi lấy dữ liệu dashboard:', error);
-        return res.status(500).json({ error: 'Đã có lỗi xảy ra ở phía máy chủ khi lấy dữ liệu.' });
-    }
-    res.json(adminData);
-});
-
-// Endpoint để ban IP hoặc Fingerprint (yêu cầu xác thực admin)
-app.post('/admin/ban', authenticateAdmin, async (req, res) => {
-    const { type, value, duration } = req.body;
-    if (!type || !value || !duration) {
-        return res.status(400).json({ error: 'Thiếu type, value, hoặc duration.' });
-    }
-
+// API lấy thống kê và danh sách bị ban
+app.get('/admin/stats', authenticateAdminToken, async (req, res) => {
     if (!db) {
-        return res.status(500).json({ error: 'Firestore không khả dụng.' });
+        return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
+    }
+    try {
+        const adminData = await getAdminData();
+        
+        const permanentBannedIps = {};
+        const temporaryBannedIps = {};
+        if (adminData.banned_ips) {
+            Object.entries(adminData.banned_ips).forEach(([ip, expiry]) => {
+                if (expiry === PERMANENT_BAN_VALUE) {
+                    permanentBannedIps[ip] = expiry;
+                } else {
+                    temporaryBannedIps[ip] = expiry;
+                }
+            });
+        }
+
+        const permanentBannedFingerprints = {};
+        const temporaryBannedFingerprints = {};
+        if (adminData.banned_fingerprints) {
+            Object.entries(adminData.banned_fingerprints).forEach(([fpId, banTime]) => {
+                if (banTime === PERMANENT_BAN_VALUE) {
+                    permanentBannedFingerprints[fpId] = banTime;
+                } else {
+                    temporaryBannedFingerprints[fpId] = banTime;
+                }
+            });
+        }
+        
+        res.json({
+            success: true,
+            stats: {
+                total_requests: adminData.total_requests || 0,
+                total_failed_recaptcha: adminData.total_failed_recaptcha || 0
+            },
+            permanent_banned_ips: permanentBannedIps,
+            temporary_banned_ips: temporaryBannedIps,
+            permanent_banned_fingerprints: permanentBannedFingerprints,
+            temporary_banned_fingerprints: temporaryBannedFingerprints
+        });
+    } catch (error) {
+        console.error('Lỗi khi lấy thống kê admin:', error);
+        res.status(500).json({ error: 'Đã có lỗi xảy ra khi lấy dữ liệu admin.' });
+    }
+});
+
+
+// API để ban một IP hoặc Fingerprint (MỚI THÊM)
+app.post('/admin/ban', authenticateAdminToken, async (req, res) => {
+    if (!db) {
+        return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
+    }
+    const { type, value, reason = 'Admin manually banned' } = req.body;
+
+    if (!type || !value) {
+        return res.status(400).json({ error: 'Thiếu loại hoặc giá trị để ban.' });
     }
 
     try {
-        let adminData = await getAdminData();
-        const now = Date.now();
-        const banExpiresAt = duration === 'permanent' ? PERMANENT_BAN_VALUE : now + parseInt(duration) * 60 * 60 * 1000;
+        const adminData = await getAdminData();
+        
+        // Đối với ban từ admin dashboard, đặt là vĩnh viễn
+        const banExpiresAt = PERMANENT_BAN_VALUE; 
 
-        let message = '';
-        let banned = false;
         if (type === 'ip') {
-            if (adminData.banned_ips[value] && adminData.banned_ips[value] > now) {
-                message = `IP: ${value} đã bị ban từ trước.`;
-            } else {
-                adminData.banned_ips[value] = banExpiresAt;
-                banned = true;
-                message = `Đã ban thành công IP: ${value} ${duration === 'permanent' ? 'vĩnh viễn' : `trong ${duration} giờ`}.`;
+            if (adminData.banned_ips[value] && adminData.banned_ips[value] === PERMANENT_BAN_VALUE) {
+                return res.status(409).json({ error: `IP ${value} đã bị ban vĩnh viễn.` });
             }
+            adminData.banned_ips[value] = banExpiresAt;
+            console.log(`[ADMIN BAN] IP ${value} bị ban vĩnh viễn. Lý do: ${reason}`);
         } else if (type === 'fingerprint') {
-            if (adminData.banned_fingerprints[value] && adminData.banned_fingerprints[value] > now) {
-                message = `Fingerprint: ${value} đã bị ban từ trước.`;
-            } else {
-                adminData.banned_fingerprints[value] = banExpiresAt;
-                banned = true;
-                message = `Đã ban thành công Fingerprint: ${value} ${duration === 'permanent' ? 'vĩnh viễn' : `trong ${duration} giờ`}.`;
+            if (adminData.banned_fingerprints[value] && adminData.banned_fingerprints[value] === PERMANENT_BAN_VALUE) {
+                return res.status(409).json({ error: `Fingerprint ${value} đã bị ban vĩnh viễn.` });
             }
+            adminData.banned_fingerprints[value] = banExpiresAt;
+            console.log(`[ADMIN BAN] Fingerprint ${value} bị ban vĩnh viễn. Lý do: ${reason}`);
         } else {
             return res.status(400).json({ error: 'Loại ban không hợp lệ.' });
         }
 
-        if (banned) {
-            await updateAdminData({
-                banned_ips: adminData.banned_ips,
-                banned_fingerprints: adminData.banned_fingerprints
-            });
-        }
-        
-        res.json({ success: true, message });
+        await updateAdminData({
+            banned_ips: adminData.banned_ips,
+            banned_fingerprints: adminData.banned_fingerprints
+        });
+        res.json({ success: true, message: `Đã ban thành công ${type}: ${value}` });
     } catch (error) {
         console.error(`Lỗi khi ban ${type}:`, error);
         res.status(500).json({ error: 'Đã có lỗi xảy ra ở phía máy chủ.' });
     }
 });
 
-// Endpoint để unban IP hoặc Fingerprint (yêu cầu xác thực admin)
-app.post('/admin/unban', authenticateAdmin, async (req, res) => {
-    const { type, value } = req.body;
-    if (!type || !value) {
-        return res.status(400).json({ error: 'Thiếu type hoặc value.' });
-    }
-
+// API để unban một IP hoặc Fingerprint (MỚI THÊM)
+app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
     if (!db) {
-        return res.status(500).json({ error: 'Firestore không khả dụng.' });
+        return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
+    }
+    const { type, value } = req.body;
+
+    if (!type || !value) {
+        return res.status(400).json({ error: 'Thiếu loại hoặc giá trị để unban.' });
     }
 
     try {
-        let adminData = await getAdminData();
+        const adminData = await getAdminData();
         let message = '';
         let unbanned = false;
+
         if (type === 'ip') {
             if (adminData.banned_ips[value]) {
                 delete adminData.banned_ips[value];
@@ -561,7 +632,7 @@ app.post('/admin/unban', authenticateAdmin, async (req, res) => {
     app.listen(PORT, () => {
         console.log(`Server Backend Doraemon đang chạy tại cổng ${PORT}`);
         if (!firebaseAdminInitialized) {
-            console.warn('Lưu ý: Firebase Admin SDK không được khởi tạo. Các chức năng liên quan đến cơ sở dữ liệu sẽ không hoạt động.');
+            console.warn('CẢNH BÁO: Firestore không khả dụng. Các chức năng cần database sẽ không hoạt động.');
         }
     });
 })();

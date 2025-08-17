@@ -4,12 +4,13 @@ import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
-import jwt from 'jsonwebtoken';
-import crypto from 'crypto'; // Thêm import này
+import jwt from 'jsonwebtoken'; // Để tạo và xác minh token admin
+import crypto from 'crypto'; // Cần cho crypto.randomBytes nếu JWT_SECRET không có trong ENV
+import bcrypt from 'bcrypt'; // Thêm bcrypt để mã hóa mật khẩu
 
 // Firebase Admin SDK imports
 import admin from 'firebase-admin';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore'; // Sử dụng FieldValue từ admin SDK
 
 dotenv.config();
 
@@ -30,167 +31,202 @@ app.use(cors({
     origin: [
         'https://viet-8101.github.io',
         'https://viet-8101.github.io/admin-dashboard-doraemon/',
-        'http://localhost:5173'
     ],
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json());
+app.use(express.json()); // Middleware để phân tích body của request JSON
 
-// --- 3. BIẾN MÔI TRƯỜNG ---
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
-
-// --- 4. KHỞI TẠO VÀ KẾT NỐI VỚI FIREBASE ---
+// Khởi tạo các biến global
 let db;
 let firebaseAdminInitialized = false;
 
-async function initializeFirebaseAdmin() {
+// --- 3. KHỞI TẠO FIREBASE ADMIN SDK ---
+const initializeFirebaseAdmin = async () => {
     try {
-        const serviceAccountString = process.env.FIREBASE_SERVICE_ACCOUNT;
-        if (!serviceAccountString) {
-            throw new Error('Biến môi trường FIREBASE_SERVICE_ACCOUNT không tồn tại.');
+        const serviceAccountJson = process.env.FIREBASE_ADMIN_SERVICE_ACCOUNT;
+        if (!serviceAccountJson) {
+            console.error('FIREBASE_ADMIN_SERVICE_ACCOUNT môi trường biến không được thiết lập. Vui lòng thiết lập nó để kết nối tới Firebase Admin.');
+            return;
         }
 
-        const serviceAccount = JSON.parse(serviceAccountString);
-
-        admin.initializeApp({
-            credential: admin.credential.cert(serviceAccount)
-        });
-        db = getFirestore();
-        firebaseAdminInitialized = true;
-        console.log('Firebase Init: Firebase Admin SDK đã được khởi tạo và kết nối với Firestore.');
+        const serviceAccount = JSON.parse(Buffer.from(serviceAccountJson, 'base64').toString('ascii'));
+        if (!admin.apps.length) {
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccount)
+            });
+            firebaseAdminInitialized = true;
+            db = getFirestore();
+            console.log('Đã kết nối Firebase Admin SDK.');
+        } else {
+            firebaseAdminInitialized = true;
+            db = getFirestore();
+            console.log('Firebase Admin SDK đã được khởi tạo.');
+        }
     } catch (error) {
-        console.error('Firebase Init: Lỗi khi khởi tạo Firebase Admin SDK:', error);
-        db = null;
+        console.error('Lỗi khi khởi tạo Firebase Admin SDK:', error);
+        firebaseAdminInitialized = false;
+        // Ghi chú: `db` sẽ là `undefined` nếu khởi tạo thất bại.
     }
-}
+};
 
-// --- 5. MIDDLEWARE XÁC THỰC TOKEN ---
-const authenticateAdmin = (req, res, next) => {
+// --- 4. CÁC HÀM XỬ LÝ DATABASE ---
+const ADMIN_COLLECTION = 'admin';
+const ADMIN_DOC_ID = 'data';
+
+const getAdminData = async () => {
+    if (!firebaseAdminInitialized) {
+        throw new Error('Firebase Admin không được khởi tạo.');
+    }
+    const docRef = db.collection(ADMIN_COLLECTION).doc(ADMIN_DOC_ID);
+    const docSnap = await docRef.get();
+    if (docSnap.exists) {
+        return docSnap.data();
+    } else {
+        // Tạo tài liệu admin nếu không tồn tại
+        const initialData = {
+            banned_ips: {},
+            banned_fingerprints: {},
+            last_updated: FieldValue.serverTimestamp()
+        };
+        await docRef.set(initialData);
+        return initialData;
+    }
+};
+
+const updateAdminData = async (data) => {
+    if (!firebaseAdminInitialized) {
+        throw new Error('Firebase Admin không được khởi tạo.');
+    }
+    const docRef = db.collection(ADMIN_COLLECTION).doc(ADMIN_DOC_ID);
+    await docRef.update({
+        ...data,
+        last_updated: FieldValue.serverTimestamp()
+    });
+};
+
+// Middleware xác thực token admin
+const authenticateAdminToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
 
     if (token == null) {
-        console.warn('Truy cập bị từ chối: Không tìm thấy token.');
-        return res.status(401).json({ error: 'Truy cập bị từ chối. Token không được cung cấp.' });
+        return res.status(401).json({ error: 'Không có token.' });
     }
 
-    jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) {
-            console.warn('Truy cập bị từ chối: Token không hợp lệ.', err);
-            return res.status(403).json({ error: 'Token không hợp lệ.' });
+    try {
+        // Đảm bảo JWT_SECRET được thiết lập
+        const jwtSecret = process.env.JWT_SECRET;
+        if (!jwtSecret) {
+            throw new Error('JWT_SECRET không được thiết lập.');
         }
+
+        const user = jwt.verify(token, jwtSecret);
         req.user = user;
         next();
-    });
+    } catch (error) {
+        console.error('Lỗi xác thực token:', error);
+        return res.status(403).json({ error: 'Token không hợp lệ.' });
+    }
 };
 
-// --- 6. API ROUTES ---
+// --- 5. CÁC ROUTE API ---
 
-// Endpoint bước 1: Đăng nhập và tạo mã 2FA
-app.post('/admin/login-step1', async (req, res) => {
+// Route đăng nhập (bị thiếu trong mã ban đầu)
+app.post('/admin/login', async (req, res) => {
     const { username, password } = req.body;
 
-    if (username !== ADMIN_USERNAME || password !== ADMIN_PASSWORD) {
-        return res.status(401).json({ error: 'Tên đăng nhập hoặc mật khẩu không đúng.' });
-    }
+    const adminUser = process.env.ADMIN_USER;
+    const adminPassHash = process.env.ADMIN_PASS_HASH;
 
-    if (!db) {
-        return res.status(503).json({ error: 'Cơ sở dữ liệu chưa sẵn sàng.' });
-    }
-
-    try {
-        const otpCode = crypto.randomBytes(6).toString('hex');
-        const sessionRef = db.collection('login_sessions').doc(username);
-
-        await sessionRef.set({
-            code: otpCode,
-            expires: Date.now() + 300000,
-            createdAt: FieldValue.serverTimestamp()
-        });
-
-        console.log(`[LOGIN 2FA] Mã xác minh cho ${username} là: ${otpCode}`);
-
-        res.json({ success: true, message: 'Vui lòng nhập mã xác minh từ server log.' });
-
-    } catch (error) {
-        console.error('Lỗi khi khởi tạo phiên xác minh:', error);
-        res.status(500).json({ error: 'Lỗi server khi khởi tạo xác minh 2 bước.' });
-    }
-});
-
-// Endpoint bước 2: Xác minh mã 2FA và hoàn tất đăng nhập
-app.post('/admin/login-step2', async (req, res) => {
-    const { username, otpCode } = req.body;
-
-    if (!db) {
-        return res.status(503).json({ error: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    if (!adminUser || !adminPassHash) {
+        return res.status(500).json({ error: 'Cấu hình server không đầy đủ.' });
     }
 
     try {
-        const sessionRef = db.collection('login_sessions').doc(username);
-        const sessionSnap = await sessionRef.get();
-
-        if (!sessionSnap.exists) {
-            return res.status(401).json({ error: 'Mã xác minh không hợp lệ hoặc đã hết hạn.' });
-        }
-
-        const storedSession = sessionSnap.data();
-        const now = Date.now();
-
-        if (storedSession.code === otpCode && storedSession.expires > now) {
-            const token = jwt.sign({ username: ADMIN_USERNAME, role: 'admin' }, JWT_SECRET, { expiresIn: '1h' });
-            await sessionRef.delete();
+        const isMatch = await bcrypt.compare(password, adminPassHash);
+        
+        if (username === adminUser && isMatch) {
+            const jwtSecret = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+            const token = jwt.sign({ username: adminUser }, jwtSecret, { expiresIn: '1h' });
             return res.json({ success: true, token });
         } else {
-            return res.status(401).json({ error: 'Mã xác minh không hợp lệ hoặc đã hết hạn.' });
+            return res.status(401).json({ error: 'Tên người dùng hoặc mật khẩu không đúng.' });
         }
-
     } catch (error) {
-        console.error('Lỗi khi xác minh mã OTP:', error);
-        return res.status(500).json({ error: 'Lỗi server khi xác minh mã.' });
+        console.error('Lỗi khi đăng nhập:', error);
+        return res.status(500).json({ error: 'Đã có lỗi xảy ra ở phía máy chủ.' });
     }
 });
 
-// Các endpoint API khác (bạn giữ lại các endpoint ban, unban, get-banned-ips, get-banned-fingerprints...)
-// ...
-
-app.get('/admin/banned-ips', authenticateAdmin, async (req, res) => {
+// Route để lấy dữ liệu admin
+app.get('/admin/data', authenticateAdminToken, async (req, res) => {
     try {
         const adminData = await getAdminData();
-        res.json(adminData.banned_ips || {});
+        res.json({ success: true, data: adminData });
     } catch (error) {
-        console.error('Lỗi khi lấy danh sách IP bị cấm:', error);
+        console.error('Lỗi khi lấy dữ liệu admin:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Route để unban IP hoặc Fingerprint
+app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
+    const { type, value } = req.body;
+    let unbanned = false;
+    let message = '';
+
+    try {
+        const adminData = await getAdminData();
+
+        if (type === 'ip') {
+            if (adminData.banned_ips[value]) {
+                delete adminData.banned_ips[value];
+                unbanned = true;
+                message = `Đã unban thành công IP: ${value}.`;
+                console.log(`[ADMIN UNBAN] IP ${value} đã được gỡ ban.`);
+            } else {
+                message = `IP: ${value} không bị ban.`;
+            }
+        } else if (type === 'fingerprint') {
+            if (adminData.banned_fingerprints[value]) {
+                delete adminData.banned_fingerprints[value];
+                unbanned = true;
+                message = `Đã unban thành công Fingerprint: ${value}.`;
+                console.log(`[ADMIN UNBAN] Fingerprint ${value} đã được gỡ ban.`);
+            } else {
+                message = `Fingerprint: ${value} không bị ban.`;
+            }
+        } else {
+            return res.status(400).json({ error: 'Loại unban không hợp lệ.' });
+        }
+
+        if (unbanned) {
+            await updateAdminData({
+                banned_ips: adminData.banned_ips,
+                banned_fingerprints: adminData.banned_fingerprints
+            });
+        }
+        
+        res.json({ success: true, message });
+    } catch (error) {
+        console.error(`Lỗi khi unban ${type}:`, error);
         res.status(500).json({ error: 'Đã có lỗi xảy ra ở phía máy chủ.' });
     }
 });
 
-// ... (các endpoint khác)
-
 // Khởi động server
 (async () => {
+    // Attempt to initialize Firebase Admin SDK
     await initializeFirebaseAdmin();
 
+    // The app will now listen on the port regardless of Firebase initialization status.
+    // If Firebase initialization failed, the `db` variable will be null, and
+    // database-dependent functions will handle the error gracefully.
     app.listen(PORT, () => {
         console.log(`Server Backend Doraemon đang chạy tại cổng ${PORT}`);
         if (!firebaseAdminInitialized) {
-            console.error('Cảnh báo: Firebase Admin SDK không được khởi tạo thành công. Các chức năng phụ thuộc vào database sẽ không hoạt động.');
+            console.warn('Cảnh báo: Firebase Admin SDK không được khởi tạo. Các chức năng database sẽ không hoạt động.');
         }
     });
 })();
-
-// Hàm trợ giúp để lấy và cập nhật dữ liệu admin
-async function getAdminData() {
-    if (!db) return { banned_ips: {}, banned_fingerprints: {} };
-    const docRef = db.collection('admin').doc('data');
-    const doc = await docRef.get();
-    return doc.exists ? doc.data() : { banned_ips: {}, banned_fingerprints: {} };
-}
-
-async function updateAdminData(data) {
-    if (!db) return;
-    const docRef = db.collection('admin').doc('data');
-    await docRef.set(data);
-}

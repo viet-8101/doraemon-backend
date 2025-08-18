@@ -33,9 +33,6 @@ app.use(cors({
         'http://localhost:5173',      // Cổng mặc định của Vite dev server (giữ lại để phát triển cục bộ)
         'https://admin-dashboard-doraemon.onrender.com',
         'http://localhost:3000',      // Cổng của backend mặc định (nếu bạn dùng)
-        // Thêm URL Firebase Hosting của bạn vào đây khi bạn triển khai frontend lên Firebase (nếu có)
-        // Ví dụ: 'https://your-firebase-project-id.web.app',
-        // 'https://your-firebase-project-id.firebaseapp.com'
     ]
 }));
 
@@ -66,12 +63,11 @@ if (!RECAPTCHA_SECRET_KEY || !ADMIN_USERNAME || !ADMIN_PASSWORD) {
 }
 
 // --- KHỞI TẠO FIREBASE ADMIN SDK ---
-let db; // Firestore instance
-let firebaseAdminInitialized = false; // Biến cờ để theo dõi trạng thái khởi tạo
+let db;
+let firebaseAdminInitialized = false;
 
 async function initializeFirebaseAdmin() {
     console.log('Firebase Init: Bắt đầu khởi tạo Firebase Admin SDK...');
-    // Đảm bảo chỉ khởi tạo một lần
     if (admin.apps.length > 0) {
         db = getFirestore();
         firebaseAdminInitialized = true;
@@ -100,7 +96,7 @@ async function initializeFirebaseAdmin() {
         admin.initializeApp({
             credential: admin.credential.cert(serviceAccount)
         });
-        db = getFirestore(); // Lấy Firestore instance từ Admin SDK
+        db = getFirestore();
         firebaseAdminInitialized = true;
         console.log('Firebase Init: Firebase Admin SDK đã được khởi tạo và kết nối với Firestore.');
     } catch (error) {
@@ -109,8 +105,7 @@ async function initializeFirebaseAdmin() {
     }
 }
 
-// Lấy app_id từ môi trường Render (hoặc dùng mặc định nếu chạy cục bộ không có)
-const appId = process.env.RENDER_SERVICE_ID || 'default-render-app-id'; // Render cung cấp RENDER_SERVICE_ID
+const appId = process.env.RENDER_SERVICE_ID || 'default-render-app-id';
 
 // --- 4. TỪ ĐIỂN DORAEMON ---
 const tuDienDoraemon = {
@@ -118,19 +113,17 @@ const tuDienDoraemon = {
 };
 
 // --- 5. HỖ TRỢ BẢO MẬT VÀ FIREBASE ---
-const BAN_DURATION_MS = 12 * 60 * 60 * 1000; // 12 giờ cho ban tạm thời (từ reCAPTCHA)
-const PERMANENT_BAN_VALUE = Number.MAX_SAFE_INTEGER; // Giá trị biểu thị ban vĩnh viễn
+const BAN_DURATION_MS = 12 * 60 * 60 * 1000;
+const PERMANENT_BAN_VALUE = Number.MAX_SAFE_INTEGER;
 const FAILED_ATTEMPTS_THRESHOLD = 5;
-const FAILED_ATTEMPTS_RESET_MS = 30 * 60 * 1000; // Đã thay đổi: reset count sau 30 phút
+const FAILED_ATTEMPTS_RESET_MS = 30 * 60 * 1000;
 
-// Lấy tham chiếu đến collection admin_data
 const getAdminDataDocRef = () => {
     if (!db) {
         console.error('Firestore chưa được khởi tạo hoặc không khả dụng. Không thể truy cập admin_data.');
         return null;
     }
-    // Sử dụng appId để tạo đường dẫn collection động
-    return db.collection('artifacts').doc(appId).collection('public').doc('data').collection('admin_data').doc('main_data'); // Thay đổi đường dẫn cho Admin SDK
+    return db.collection('artifacts').doc(appId).collection('public').doc('data').collection('admin_data').doc('main_data');
 };
 
 async function getAdminData() {
@@ -138,7 +131,7 @@ async function getAdminData() {
     if (!docRef) return {};
 
     try {
-        const docSnap = await docRef.get(); // Sử dụng .get() cho Admin SDK
+        const docSnap = await docRef.get();
         if (docSnap.exists) {
             return docSnap.data();
         } else {
@@ -149,7 +142,7 @@ async function getAdminData() {
                 total_failed_recaptcha: 0,
                 failedAttempts: {}
             };
-            await docRef.set(initialData); // Sử dụng .set() cho Admin SDK
+            await docRef.set(initialData);
             return initialData;
         }
     } catch (error) {
@@ -165,13 +158,12 @@ async function updateAdminData(dataToUpdate) {
         return;
     }
     try {
-        await docRef.update(dataToUpdate); // Sử dụng .update() cho Admin SDK
+        await docRef.update(dataToUpdate);
     } catch (error) {
         console.error('Lỗi khi cập nhật admin data vào Firestore:', error);
     }
 }
 
-// Hàm lấy IP thực của client từ X-Forwarded-For hoặc req.ip
 function getClientIp(req) {
     const forwardedIpsStr = req.headers['x-forwarded-for'];
     if (forwardedIpsStr) {
@@ -181,7 +173,6 @@ function getClientIp(req) {
     return req.ip;
 }
 
-// Chuẩn hóa IP (loại bỏ ::ffff: để tránh trùng IP)
 function normalizeIp(ip) {
     if (ip && ip.startsWith('::ffff:')) {
         return ip.substring(7);
@@ -189,7 +180,6 @@ function normalizeIp(ip) {
     return ip;
 }
 
-// Hàm xác thực và làm sạch đầu vào người dùng
 function sanitizeInput(input) {
     if (typeof input !== 'string') {
         return '';
@@ -204,7 +194,6 @@ function sanitizeInput(input) {
     return sanitized;
 }
 
-// Ghi nhận lần fail reCAPTCHA, nếu vượt ngưỡng sẽ banned
 async function handleFailedAttempt(ip, visitorId) {
     const now = Date.now();
     const adminData = await getAdminData();
@@ -213,19 +202,18 @@ async function handleFailedAttempt(ip, visitorId) {
 
     let data = adminData.failedAttempts?.[ip] || { count: 0, lastFailTime: 0 };
 
-    if (now - data.lastFailTime > FAILED_ATTEMPTS_RESET_MS) { // Nếu thời gian giữa các lần thất bại lớn hơn ngưỡng reset
-        data = { count: 1, lastFailTime: now }; // Đặt lại số lần thất bại về 1
+    if (now - data.lastFailTime > FAILED_ATTEMPTS_RESET_MS) {
+        data = { count: 1, lastFailTime: now };
     } else {
-        data.count++; // Tăng số lần thất bại
+        data.count++;
         data.lastFailTime = now;
     }
 
-    if (db) { // Chỉ cập nhật nếu Firestore đã được khởi tạo
+    if (db) {
         await updateAdminData({
             [`failedAttempts.${ip}`]: data,
-            total_failed_recaptcha: FieldValue.increment(1) // Sử dụng FieldValue.increment
+            total_failed_recaptcha: FieldValue.increment(1)
         });
-        // LOG MỚI ĐƯỢC THÊM VÀO ĐÂY
         console.log(`[FAILED-ATTEMPT-RECORDED] Lần thất bại mới đã được ghi nhận cho IP: ${ip}, tổng số lần là: ${data.count}`);
     } else {
         console.warn('Firestore chưa được khởi tạo, không thể ghi nhận thất bại reCAPTCHA vào Firestore.');
@@ -234,18 +222,17 @@ async function handleFailedAttempt(ip, visitorId) {
     console.warn(`[RECAPTCHA FAIL] IP: ${ip} thất bại lần ${data.count}`);
 
     if (data.count >= FAILED_ATTEMPTS_THRESHOLD) {
-        const banExpiresAt = now + BAN_DURATION_MS; // Vẫn dùng BAN_DURATION_MS cho ban tạm thời từ reCAPTCHA
+        const banExpiresAt = now + BAN_DURATION_MS;
         currentBannedIps[ip] = banExpiresAt;
         if (visitorId) {
-            // Fingerprint từ reCAPTCHA cũng sẽ bị ban tạm thời
             currentBannedFingerprints[visitorId] = banExpiresAt;
         }
         
-        if (db) { // Chỉ cập nhật nếu Firestore đã được khởi tạo
+        if (db) {
             await updateAdminData({
                 banned_ips: currentBannedIps,
                 banned_fingerprints: currentBannedFingerprints,
-                [`failedAttempts.${ip}`]: FieldValue.delete() // Xóa mục failedAttempts khi ban
+                [`failedAttempts.${ip}`]: FieldValue.delete()
             });
         } else {
              console.warn('Firestore chưa được khởi tạo, không thể cập nhật danh sách ban.');
@@ -256,13 +243,11 @@ async function handleFailedAttempt(ip, visitorId) {
     }
 }
 
-// Middleware kiểm tra banned IP và fingerprint
 async function securityMiddleware(req, res, next) {
     const clientIpRaw = getClientIp(req);
     const ip = normalizeIp(clientIpRaw);
     const visitorId = req.body.visitorId;
 
-    // Log chi tiết để kiểm tra trạng thái dữ liệu
     console.log(`[SECURITY-CHECK] Bắt đầu kiểm tra IP: ${ip}, VisitorId: ${visitorId}`);
     const adminData = await getAdminData();
     const currentBannedIps = adminData.banned_ips || {};
@@ -271,14 +256,12 @@ async function securityMiddleware(req, res, next) {
     console.log(`[SECURITY-CHECK-DATA] Dữ liệu ban hiện tại cho VisitorId ${visitorId}:`, currentBannedFingerprints[visitorId] ? new Date(currentBannedFingerprints[visitorId]).toLocaleString('vi-VN') : 'Không bị ban');
 
 
-    // Kiểm tra banned fingerprint
     if (visitorId && currentBannedFingerprints[visitorId]) {
         const banExpiresAt = currentBannedFingerprints[visitorId];
         if (banExpiresAt === PERMANENT_BAN_VALUE || Date.now() < banExpiresAt) {
             const banMessage = banExpiresAt === PERMANENT_BAN_VALUE ? 'vĩnh viễn' : `tạm thời. Vui lòng thử lại sau: ${new Date(banExpiresAt).toLocaleString('vi-VN')}`;
             return res.status(403).json({ error: `Truy cập của bạn đã bị chặn ${banMessage}.` });
         } else if (Date.now() >= banExpiresAt) {
-            // Fingerprint đã hết thời gian ban, gỡ ban tự động
             delete currentBannedFingerprints[visitorId];
             if (db) {
                 await updateAdminData({ banned_fingerprints: currentBannedFingerprints });
@@ -287,14 +270,12 @@ async function securityMiddleware(req, res, next) {
         }
     }
 
-    // Kiểm tra banned IP
     const banExpiresAt = currentBannedIps[ip];
     if (banExpiresAt) {
         if (banExpiresAt === PERMANENT_BAN_VALUE || Date.now() < banExpiresAt) {
             const banMessage = banExpiresAt === PERMANENT_BAN_VALUE ? 'vĩnh viễn' : `tạm thời. Vui lòng thử lại sau: ${new Date(banExpiresAt).toLocaleString('vi-VN')}`;
             return res.status(403).json({ error: `IP của bạn đang bị chặn ${banMessage}.` });
         } else if (Date.now() >= banExpiresAt) {
-            // IP đã hết thời gian ban, gỡ ban tự động
             delete currentBannedIps[ip];
             if (db) {
                 await updateAdminData({ banned_ips: currentBannedIps });
@@ -306,7 +287,6 @@ async function securityMiddleware(req, res, next) {
     next();
 }
 
-// Middleware xác thực Admin JWT
 function authenticateAdminToken(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -326,27 +306,22 @@ app.get('/', (req, res) => {
     res.status(200).send('Backend Doraemon đang chạy và hoạt động tốt!');
 });
 
-// --- Endpoint để lấy danh sách tất cả người dùng từ Firebase Authentication ---
-// Đây là endpoint mới cho UsersPage trên frontend
-app.get('/api/users', authenticateAdminToken, async (req, res) => { // Thêm authenticateAdminToken để bảo vệ endpoint này
+app.get('/api/users', authenticateAdminToken, async (req, res) => {
     if (!firebaseAdminInitialized || !admin.auth()) {
         console.error('Firebase Admin SDK hoặc Auth chưa được khởi tạo. Không thể lấy người dùng.');
         return res.status(503).json({ error: 'Dịch vụ xác thực người dùng chưa sẵn sàng.' });
     }
     try {
-        // Lấy tất cả người dùng từ Firebase Authentication
-        const listUsersResult = await admin.auth().listUsers(1000); // Lấy tối đa 1000 người dùng
+        const listUsersResult = await admin.auth().listUsers(1000);
         const users = listUsersResult.users.map(userRecord => ({
-            uid: userRecord.uid, // ID duy nhất của người dùng
+            uid: userRecord.uid,
             email: userRecord.email,
-            displayName: userRecord.displayName || 'Người dùng mới', // displayName có thể null
+            displayName: userRecord.displayName || 'Người dùng mới',
             photoURL: userRecord.photoURL,
             emailVerified: userRecord.emailVerified,
             disabled: userRecord.disabled,
             createdAt: userRecord.metadata ? userRecord.metadata.creationTime : null,
             lastSignInTime: userRecord.metadata ? userRecord.metadata.lastSignInTime : null,
-            // Bạn có thể thêm các trường khác từ userRecord nếu cần
-            // Ví dụ: phoneNumber: userRecord.phoneNumber
         }));
 
         res.status(200).json(users);
@@ -363,8 +338,8 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
     const clientIpRaw = getClientIp(req);
     const ip = normalizeIp(clientIpRaw);
 
-    if (db) { // Chỉ cập nhật nếu Firestore đã được khởi tạo
-        await updateAdminData({ total_requests: FieldValue.increment(1) }); // Sử dụng FieldValue.increment
+    if (db) {
+        await updateAdminData({ total_requests: FieldValue.increment(1) });
     } else {
         console.warn('Firestore chưa được khởi tạo, không thể cập nhật total_requests.');
     }
@@ -399,7 +374,6 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
         });
 
         if (!verificationResponse.ok) {
-            // Ghi log trạng thái HTTP và nội dung phản hồi nếu không thành công
             const errorText = await verificationResponse.text();
             console.error(`Lỗi HTTP từ reCAPTCHA API: ${verificationResponse.status} ${verificationResponse.statusText}. Phản hồi: ${errorText}`);
             if (db) {
@@ -412,7 +386,7 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
         console.log('Phản hồi reCAPTCHA nhận được:', recaptchaData);
 
         if (!recaptchaData.success) {
-            if (db) { // Chỉ xử lý nếu Firestore đã được khởi tạo
+            if (db) {
                 await handleFailedAttempt(ip, visitorId);
             } else {
                 console.warn('Firestore chưa được khởi tạo, không thể ghi nhận thất bại reCAPTCHA.');
@@ -421,11 +395,9 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
             return res.status(401).json({ error: 'Xác thực không thành công. Vui lòng thử lại.', details: recaptchaData['error-codes'] });
         }
 
-        // Nếu reCAPTCHA thành công, reset số lần thử thất bại của IP này
-        if (db) { // Chỉ xử lý nếu Firestore đã được khởi tạo
+        if (db) {
             console.log(`Firestore Reset: Đang cố gắng xóa failedAttempts cho IP: ${ip}`);
             try {
-                // Attempt to delete directly. Firestore will handle if it doesn't exist.
                 await updateAdminData({ [`failedAttempts.${ip}`]: FieldValue.delete() });
                 console.log(`Firestore Reset: failedAttempts cho IP: ${ip} đã được xóa thành công (hoặc không tồn tại để xóa).`);
             } catch (deleteError) {
@@ -455,7 +427,6 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
 
     } catch (error) {
         console.error('Lỗi khi gọi reCAPTCHA API hoặc lỗi server:', error);
-        // Ghi log toàn bộ đối tượng lỗi để có thêm thông tin chi tiết
         console.error(error); 
         res.status(500).json({ error: 'Đã có lỗi xảy ra ở phía máy chủ khi xác thực reCAPTCHA.', details: error.message });
     }
@@ -463,60 +434,103 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
 
 // --- API ADMIN DASHBOARD ---
 
-// API đăng nhập Admin
+// Bước 1: API đăng nhập Admin, trả về token 2FA tạm thời
 app.post('/admin/login', async (req, res) => {
     const { username, password } = req.body;
 
     if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
-        const token = jwt.sign({ username: ADMIN_USERNAME, role: 'admin' }, JWT_SECRET, { expiresIn: '1h' });
-        res.json({ success: true, token });
+        const tfaCode = Math.floor(100000 + Math.random() * 900000).toString();
+        
+        console.log('---'.repeat(15));
+        console.log(`[ADMIN 2FA] Mã xác thực cho ${username} là: ${tfaCode}`);
+        console.log('---'.repeat(15));
+        
+        const tfaToken = jwt.sign(
+            { username, tfaCode },
+            JWT_SECRET,
+            { expiresIn: '5m' }
+        );
+
+        res.json({ 
+            success: true, 
+            message: 'Vui lòng kiểm tra log server để lấy mã xác thực 2 bước.',
+            tfaToken
+        });
     } else {
         res.status(401).json({ error: 'Tên đăng nhập hoặc mật khẩu không đúng.' });
     }
 });
 
-// API lấy thống kê và danh sách bị ban
-app.get('/admin/stats', authenticateAdminToken, async (req, res) => {
+// Bước 2: API xác thực mã 2FA
+app.post('/admin/verify-tfa', (req, res) => {
+    const { tfaToken, tfaCode } = req.body;
+
+    if (!tfaToken || !tfaCode) {
+        return res.status(400).json({ error: 'Thiếu token hoặc mã xác thực.' });
+    }
+
+    jwt.verify(tfaToken, JWT_SECRET, (err, decoded) => {
+        if (err) {
+            return res.status(403).json({ error: 'Mã xác thực không hợp lệ hoặc đã hết hạn. Vui lòng đăng nhập lại.' });
+        }
+
+        if (decoded.tfaCode === tfaCode) {
+            const adminToken = jwt.sign(
+                { username: decoded.username, role: 'admin' },
+                JWT_SECRET,
+                { expiresIn: '8h' }
+            );
+            res.json({ success: true, adminToken });
+        } else {
+            res.status(401).json({ error: 'Mã xác thực không chính xác.' });
+        }
+    });
+});
+
+
+// [THAY ĐỔI] API lấy thống kê, đã xử lý phân loại danh sách ban
+app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => {
     if (!db) {
         return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
     }
     try {
         const adminData = await getAdminData();
+        const now = Date.now();
         
         const permanentBannedIps = {};
         const temporaryBannedIps = {};
         if (adminData.banned_ips) {
-            Object.entries(adminData.banned_ips).forEach(([ip, expiry]) => {
+            for (const [ip, expiry] of Object.entries(adminData.banned_ips)) {
                 if (expiry === PERMANENT_BAN_VALUE) {
                     permanentBannedIps[ip] = expiry;
-                } else {
+                } else if (expiry > now) { // Chỉ lấy những ban tạm thời còn hiệu lực
                     temporaryBannedIps[ip] = expiry;
                 }
-            });
+            }
         }
 
         const permanentBannedFingerprints = {};
         const temporaryBannedFingerprints = {};
         if (adminData.banned_fingerprints) {
-            Object.entries(adminData.banned_fingerprints).forEach(([fpId, banTime]) => {
+             for (const [fpId, banTime] of Object.entries(adminData.banned_fingerprints)) {
                 if (banTime === PERMANENT_BAN_VALUE) {
                     permanentBannedFingerprints[fpId] = banTime;
-                } else {
+                } else if (banTime > now) { // Chỉ lấy những ban tạm thời còn hiệu lực
                     temporaryBannedFingerprints[fpId] = banTime;
                 }
-            });
+            }
         }
         
         res.json({
             success: true,
             stats: {
                 total_requests: adminData.total_requests || 0,
-                total_failed_recaptcha: adminData.total_failed_recaptcha || 0
+                total_failed_recaptcha: adminData.total_failed_recaptcha || 0,
             },
             permanent_banned_ips: permanentBannedIps,
             temporary_banned_ips: temporaryBannedIps,
             permanent_banned_fingerprints: permanentBannedFingerprints,
-            temporary_banned_fingerprints: temporaryBannedFingerprints
+            temporary_banned_fingerprints: temporaryBannedFingerprints,
         });
     } catch (error) {
         console.error('Lỗi khi lấy thống kê admin:', error);
@@ -525,12 +539,12 @@ app.get('/admin/stats', authenticateAdminToken, async (req, res) => {
 });
 
 
-// API để ban một IP hoặc Fingerprint (MỚI THÊM)
+// API để ban một IP hoặc Fingerprint
 app.post('/admin/ban', authenticateAdminToken, async (req, res) => {
     if (!db) {
         return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
     }
-    const { type, value, reason = 'Admin manually banned' } = req.body;
+    const { type, value, duration } = req.body;
 
     if (!type || !value) {
         return res.status(400).json({ error: 'Thiếu loại hoặc giá trị để ban.' });
@@ -538,22 +552,14 @@ app.post('/admin/ban', authenticateAdminToken, async (req, res) => {
 
     try {
         const adminData = await getAdminData();
-        
-        // Đối với ban từ admin dashboard, đặt là vĩnh viễn
-        const banExpiresAt = PERMANENT_BAN_VALUE; 
+        const banExpiresAt = duration === 'permanent' ? PERMANENT_BAN_VALUE : Date.now() + BAN_DURATION_MS;
 
         if (type === 'ip') {
-            if (adminData.banned_ips[value] && adminData.banned_ips[value] === PERMANENT_BAN_VALUE) {
-                return res.status(409).json({ error: `IP ${value} đã bị ban vĩnh viễn.` });
-            }
+            adminData.banned_ips = adminData.banned_ips || {};
             adminData.banned_ips[value] = banExpiresAt;
-            console.log(`[ADMIN BAN] IP ${value} bị ban vĩnh viễn. Lý do: ${reason}`);
         } else if (type === 'fingerprint') {
-            if (adminData.banned_fingerprints[value] && adminData.banned_fingerprints[value] === PERMANENT_BAN_VALUE) {
-                return res.status(409).json({ error: `Fingerprint ${value} đã bị ban vĩnh viễn.` });
-            }
+            adminData.banned_fingerprints = adminData.banned_fingerprints || {};
             adminData.banned_fingerprints[value] = banExpiresAt;
-            console.log(`[ADMIN BAN] Fingerprint ${value} bị ban vĩnh viễn. Lý do: ${reason}`);
         } else {
             return res.status(400).json({ error: 'Loại ban không hợp lệ.' });
         }
@@ -562,14 +568,14 @@ app.post('/admin/ban', authenticateAdminToken, async (req, res) => {
             banned_ips: adminData.banned_ips,
             banned_fingerprints: adminData.banned_fingerprints
         });
-        res.json({ success: true, message: `Đã ban thành công ${type}: ${value}` });
+        res.json({ success: true, message: `Đã ban ${duration === 'permanent' ? 'vĩnh viễn' : 'tạm thời'} ${type}: ${value}` });
     } catch (error) {
         console.error(`Lỗi khi ban ${type}:`, error);
         res.status(500).json({ error: 'Đã có lỗi xảy ra ở phía máy chủ.' });
     }
 });
 
-// API để unban một IP hoặc Fingerprint (MỚI THÊM)
+// API để unban một IP hoặc Fingerprint
 app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
     if (!db) {
         return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
@@ -585,26 +591,16 @@ app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
         let message = '';
         let unbanned = false;
 
-        if (type === 'ip') {
-            if (adminData.banned_ips[value]) {
-                delete adminData.banned_ips[value];
-                unbanned = true;
-                message = `Đã unban thành công IP: ${value}.`;
-                console.log(`[ADMIN UNBAN] IP ${value} đã được gỡ ban.`);
-            } else {
-                message = `IP: ${value} không bị ban.`;
-            }
-        } else if (type === 'fingerprint') {
-            if (adminData.banned_fingerprints[value]) {
-                delete adminData.banned_fingerprints[value];
-                unbanned = true;
-                message = `Đã unban thành công Fingerprint: ${value}.`;
-                console.log(`[ADMIN UNBAN] Fingerprint ${value} đã được gỡ ban.`);
-            } else {
-                message = `Fingerprint: ${value} không bị ban.`;
-            }
+        if (type === 'ip' && adminData.banned_ips && adminData.banned_ips[value]) {
+            delete adminData.banned_ips[value];
+            unbanned = true;
+            message = `Đã unban thành công IP: ${value}.`;
+        } else if (type === 'fingerprint' && adminData.banned_fingerprints && adminData.banned_fingerprints[value]) {
+            delete adminData.banned_fingerprints[value];
+            unbanned = true;
+            message = `Đã unban thành công Fingerprint: ${value}.`;
         } else {
-            return res.status(400).json({ error: 'Loại unban không hợp lệ.' });
+            message = `${type.charAt(0).toUpperCase() + type.slice(1)}: ${value} không có trong danh sách bị cấm.`;
         }
 
         if (unbanned) {
@@ -621,14 +617,10 @@ app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
     }
 });
 
+
 // Khởi động server
 (async () => {
-    // Attempt to initialize Firebase Admin SDK
     await initializeFirebaseAdmin();
-
-    // The app will now listen on the port regardless of Firebase initialization status.
-    // If Firebase initialization failed, the `db` variable will be null, and
-    // database-dependent functions will handle the error gracefully.
     app.listen(PORT, () => {
         console.log(`Server Backend Doraemon đang chạy tại cổng ${PORT}`);
         if (!firebaseAdminInitialized) {

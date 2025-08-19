@@ -262,6 +262,9 @@ async function securityMiddleware(req, res, next) {
     const ip = normalizeIp(clientIpRaw);
     const visitorId = req.body.visitorId;
 
+    // Log IP và visitorId để dễ dàng theo dõi
+    console.log(`[REQUEST IN] IP: ${ip}, VisitorId: ${visitorId}`);
+
     if (!db) {
         console.warn('Firestore chưa được khởi tạo. Bỏ qua kiểm tra bảo mật.');
         return next();
@@ -281,7 +284,7 @@ async function securityMiddleware(req, res, next) {
             } else if (Date.now() >= banExpiresAt) {
                 delete currentBannedFingerprints[visitorId];
                 await updateAdminData({ banned_fingerprints: currentBannedFingerprints });
-                console.log(`[UNBAN] Fingerprint ${visitorId} đã được gỡ chặn tự động.`);
+                console.log(`[UNBAN-AUTO] Fingerprint ${visitorId} đã được gỡ chặn tự động.`);
             }
         }
 
@@ -294,7 +297,7 @@ async function securityMiddleware(req, res, next) {
             } else if (Date.now() >= banExpiresAt) {
                 delete currentBannedIps[ip];
                 await updateAdminData({ banned_ips: currentBannedIps });
-                console.log(`[UNBAN] IP ${ip} đã được gỡ chặn tự động.`);
+                console.log(`[UNBAN-AUTO] IP ${ip} đã được gỡ chặn tự động.`);
             }
         }
     } catch (error) {

@@ -17,6 +17,8 @@
     "express": "^4.19.2",
     "firebase-admin": "^12.3.0",
     "jsonwebtoken": "^9.0.2",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "speakeasy": "^2.0.0",
+    "qrcode": "^1.5.3"
   }
 }

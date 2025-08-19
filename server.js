@@ -6,8 +6,6 @@ import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import speakeasy from 'speakeasy';
-import qrcode from 'qrcode';
 
 // Firebase Admin SDK imports
 import admin from 'firebase-admin';
@@ -151,8 +149,7 @@ async function getAdminData() {
                 banned_fingerprints: {},
                 total_requests: 0,
                 total_failed_recaptcha: 0,
-                failedAttempts: {},
-                tfa_secret: null, // Thêm trường tfa_secret
+                failedAttempts: {}
             };
             await docRef.set(initialData);
             return initialData;
@@ -451,94 +448,43 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
 // Bước 1: API đăng nhập Admin, trả về token 2FA tạm thời
 app.post('/admin/login', async (req, res) => {
     const { username, password } = req.body;
-    if (!db) {
-        return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
-    }
 
     if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
-        try {
-            const adminDataDocRef = getAdminDataDocRef();
-            const adminData = await (await adminDataDocRef.get()).data();
-            
-            let tfaSecret = adminData.tfa_secret;
-            let qrCodeUrl = null;
-            let message = 'Vui lòng nhập mã xác thực từ Google Authenticator.';
+        const tfaCode = Math.floor(100000 + Math.random() * 900000).toString();
+        
+        // Ghi mã 2FA vào log server (không hiển thị cho người dùng)
+        console.log(`[ADMIN 2FA] Mã xác thực cho ${username} là: ${tfaCode}`);
+        
+        const tfaToken = jwt.sign(
+            { username, tfaCode },
+            JWT_SECRET,
+            { expiresIn: '5m' }
+        );
 
-            if (!tfaSecret) {
-                // Nếu chưa có secret, tạo secret mới và lưu vào Firestore
-                const secret = speakeasy.generateSecret({ length: 20 });
-                tfaSecret = secret.base32;
-                await updateAdminData({ tfa_secret: tfaSecret });
-                console.log(`[ADMIN 2FA] Đã tạo và lưu secret mới vào Firestore.`);
-                
-                const otpauthUrl = speakeasy.otpauthURL({
-                    secret: tfaSecret,
-                    label: `DoraemonAdmin (${username})`,
-                    issuer: 'Doraemon Backend',
-                });
-                qrCodeUrl = await new Promise((resolve, reject) => {
-                    qrcode.toDataURL(otpauthUrl, (err, data_url) => {
-                        if (err) reject(err);
-                        resolve(data_url);
-                    });
-                });
-                message = 'Bạn cần thiết lập Google Authenticator. Vui lòng quét mã QR sau và nhập mã xác thực.';
-            }
-
-            const tfaToken = jwt.sign(
-                { username, secret: tfaSecret },
-                JWT_SECRET,
-                { expiresIn: '5m' }
-            );
-
-            res.json({ 
-                success: true, 
-                message,
-                tfaToken,
-                qrCodeUrl
-            });
-        } catch (error) {
-            console.error('Lỗi khi xử lý 2FA:', error);
-            res.status(500).json({ error: 'Đã có lỗi xảy ra ở phía máy chủ khi xử lý 2FA.' });
-        }
-
+        res.json({ 
+            success: true, 
+            message: 'Vui lòng kiểm tra log server để lấy mã xác thực 2 bước.',
+            tfaToken
+        });
     } else {
         res.status(401).json({ error: 'Tên đăng nhập hoặc mật khẩu không đúng.' });
     }
 });
 
 // Bước 2: API xác thực mã 2FA
-app.post('/admin/verify-tfa', async (req, res) => {
+app.post('/admin/verify-tfa', (req, res) => {
     const { tfaToken, tfaCode } = req.body;
-    if (!db) {
-        return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
-    }
 
     if (!tfaToken || !tfaCode) {
         return res.status(400).json({ error: 'Thiếu token hoặc mã xác thực.' });
     }
 
-    jwt.verify(tfaToken, JWT_SECRET, async (err, decoded) => {
+    jwt.verify(tfaToken, JWT_SECRET, (err, decoded) => {
         if (err) {
             return res.status(403).json({ error: 'Mã xác thực không hợp lệ hoặc đã hết hạn. Vui lòng đăng nhập lại.' });
         }
 
-        const adminDataDocRef = getAdminDataDocRef();
-        const adminData = await (await adminDataDocRef.get()).data();
-        const tfaSecret = adminData.tfa_secret;
-
-        if (!tfaSecret || tfaSecret !== decoded.secret) {
-             return res.status(403).json({ error: 'Mã xác thực không hợp lệ. Vui lòng thử lại.' });
-        }
-
-        const verified = speakeasy.totp.verify({
-            secret: tfaSecret,
-            encoding: 'base32',
-            token: tfaCode,
-            window: 1
-        });
-
-        if (verified) {
+        if (decoded.tfaCode === tfaCode) {
             const adminToken = jwt.sign(
                 { username: decoded.username, role: 'admin' },
                 JWT_SECRET,

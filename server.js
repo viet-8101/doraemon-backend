@@ -1,13 +1,13 @@
-// server.js
+// sever.js
 // --- 1. IMPORT CÁC THƯ VIỆN ---
 import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
-import cookieParser from 'cookie-parser'; // [NÂNG CẤP] Thêm cookie-parser
-import speakeasy from 'speakeasy';         // [NÂNG CẤP] Thêm speakeasy cho 2FA
-import qrcode from 'qrcode';             // [NÂNG CẤP] Thêm qrcode để tạo mã QR
+import cookieParser from 'cookie-parser';
+import speakeasy from 'speakeasy';
+import qrcode from 'qrcode';
 
 // Firebase Admin SDK imports
 import admin from 'firebase-admin';
@@ -34,11 +34,11 @@ app.use(cors({
         'http://localhost:5173',
         'https://admin-dashboard-doraemon.onrender.com',
     ],
-    credentials: true, // [NÂNG CẤP] Cho phép trình duyệt gửi cookie
+    credentials: true,
 }));
 
 app.use(express.json());
-app.use(cookieParser()); // [NÂNG CẤP] Sử dụng cookie-parser
+app.use(cookieParser());
 app.set('trust proxy', 1);
 
 // --- HTTP SECURITY HEADERS ---
@@ -97,8 +97,8 @@ async function initializeFirebaseAdmin() {
 
 const appId = process.env.RENDER_SERVICE_ID || 'default-render-app-id';
 
-// --- [NÂNG CẤP] TỪ ĐIỂN DORAEMON TỪ DATABASE ---
-let sortedDoraemonEntries = []; // Biến này sẽ được load từ Firestore
+// --- TỪ ĐIỂN DORAEMON TỪ DATABASE ---
+let sortedDoraemonEntries = [];
 
 async function loadDictionaryFromFirestore() {
     if (!db) {
@@ -123,7 +123,7 @@ async function loadDictionaryFromFirestore() {
     }
 }
 
-// --- 5. HỖ TRỢ BẢO MẬT VÀ FIREBASE ---
+// --- HỖ TRỢ BẢO MẬT VÀ FIREBASE ---
 const BAN_DURATION_MS = 12 * 60 * 60 * 1000;
 const PERMANENT_BAN_VALUE = Number.MAX_SAFE_INTEGER;
 const FAILED_ATTEMPTS_THRESHOLD = 5;
@@ -164,13 +164,8 @@ function sanitizeInput(input) {
     let sanitized = input.trim().toLowerCase().substring(0, 200);
     return sanitized.replace(/[^a-z0-9àáạảãăắằặẳẵâấầậẩẫèéẹẻẽêếềệểễìíịỉĩòóọỏõôốồộổỗơớờợởỡùúụủũưứừựửữđ\s.,!?-]/g, '');
 }
-async function handleFailedAttempt(ip, visitorId) {
-    if (!db) return;
-    const docRef = getAdminDataDocRef();
-    if (!docRef) return;
-    await db.runTransaction(async t => { /* ... Giữ nguyên logic ... */ });
-}
-async function securityMiddleware(req, res, next) { /* ... Giữ nguyên logic ... */ 
+
+async function securityMiddleware(req, res, next) { 
      const clientIpRaw = getClientIp(req);
     const ip = normalizeIp(clientIpRaw);
     const visitorId = req.body.visitorId;
@@ -218,7 +213,6 @@ async function securityMiddleware(req, res, next) { /* ... Giữ nguyên logic .
     next();
 }
 
-// [NÂNG CẤP] Middleware xác thực token từ cookie
 function authenticateAdminToken(req, res, next) {
     const token = req.cookies.adminToken;
     if (!token) return res.status(401).json({ error: 'Truy cập bị từ chối. Vui lòng đăng nhập.' });
@@ -238,12 +232,10 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
     if (sortedDoraemonEntries.length === 0) {
         return res.status(503).json({ error: 'Từ điển chưa sẵn sàng, vui lòng thử lại sau.' });
     }
-    // ... Logic còn lại giữ nguyên, chỉ thay đổi nguồn từ điển
     const { userInput, recaptchaToken, visitorId } = req.body;
     const ip = normalizeIp(getClientIp(req));
     if (!userInput || !recaptchaToken) return res.status(400).json({ error: 'Thiếu dữ liệu.' });
     
-    // ... Logic xác thực reCAPTCHA
      try {
         const recaptchaVerificationUrl = `https://www.google.com/recaptcha/api/siteverify`;
         const params = new URLSearchParams({ secret: RECAPTCHA_SECRET_KEY, response: recaptchaToken, remoteip: ip });
@@ -253,7 +245,7 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
         
         const recaptchaData = await verificationResponse.json();
         if (!recaptchaData.success) {
-            await handleFailedAttempt(ip, visitorId);
+            // await handleFailedAttempt(ip, visitorId); // Cân nhắc có nên ban vì reCAPTCHA sai không
             return res.status(401).json({ error: 'Xác thực reCAPTCHA thất bại.' });
         }
         
@@ -321,8 +313,13 @@ app.post('/admin/verify-tfa', async (req, res) => {
 
         if (verified) {
             const adminToken = jwt.sign({ username: decoded.username, role: 'admin' }, JWT_SECRET, { expiresIn: '8h' });
+            
+            // [SỬA LỖI] Thay đổi sameSite thành 'none' để cho phép cookie cross-domain
             res.cookie('adminToken', adminToken, {
-                httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict', maxAge: 8 * 3600000,
+                httpOnly: true,
+                secure: true, // Bắt buộc phải là true khi sameSite='none'
+                sameSite: 'none', // Cho phép gửi cookie từ github.io đến onrender.com
+                maxAge: 8 * 3600000,
             });
             res.json({ success: true, message: 'Đăng nhập thành công!' });
         } else {
@@ -332,8 +329,8 @@ app.post('/admin/verify-tfa', async (req, res) => {
 });
 
 app.get('/admin/verify-session', authenticateAdminToken, (req, res) => res.json({ success: true, loggedIn: true }));
-app.post('/admin/logout', (req, res) => { res.clearCookie('adminToken'); res.json({ success: true }); });
-app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => { /* ... Giữ nguyên ... */ 
+app.post('/admin/logout', (req, res) => { res.clearCookie('adminToken', { httpOnly: true, secure: true, sameSite: 'none' }); res.json({ success: true }); });
+app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => { 
     if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
     try {
         const adminData = await getAdminData();
@@ -362,7 +359,7 @@ app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => { /
         res.status(500).json({ error: 'Lỗi khi lấy dữ liệu admin.' });
     }
 });
-app.post('/admin/ban', authenticateAdminToken, async (req, res) => { /* ... Giữ nguyên ... */ 
+app.post('/admin/ban', authenticateAdminToken, async (req, res) => { 
     const { type, value, duration } = req.body;
     if (!db || !type || !value) return res.status(400).json({ error: 'Yêu cầu không hợp lệ.' });
     try {
@@ -378,7 +375,7 @@ app.post('/admin/ban', authenticateAdminToken, async (req, res) => { /* ... Gi�
         res.status(500).json({ error: 'Lỗi khi ban.' });
     }
 });
-app.post('/admin/unban', authenticateAdminToken, async (req, res) => { /* ... Giữ nguyên ... */ 
+app.post('/admin/unban', authenticateAdminToken, async (req, res) => { 
     const { type, value } = req.body;
     if (!db || !type || !value) return res.status(400).json({ error: 'Yêu cầu không hợp lệ.' });
     try {
@@ -402,7 +399,7 @@ app.post('/admin/unban', authenticateAdminToken, async (req, res) => { /* ... Gi
     }
 });
 
-// --- [MỚI] API QUẢN LÝ TỪ ĐIỂN ---
+// --- API QUẢN LÝ TỪ ĐIỂN ---
 app.get('/admin/dictionary', authenticateAdminToken, async (req, res) => {
     if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
     try {

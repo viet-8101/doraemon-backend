@@ -166,7 +166,7 @@ function sanitizeInput(input) {
 }
 
 async function securityMiddleware(req, res, next) { 
-     const clientIpRaw = getClientIp(req);
+    const clientIpRaw = getClientIp(req);
     const ip = normalizeIp(clientIpRaw);
     const visitorId = req.body.visitorId;
 
@@ -314,12 +314,13 @@ app.post('/admin/verify-tfa', async (req, res) => {
         if (verified) {
             const adminToken = jwt.sign({ username: decoded.username, role: 'admin' }, JWT_SECRET, { expiresIn: '8h' });
             
-            // [SỬA LỖI] Thay đổi sameSite thành 'none' để cho phép cookie cross-domain
+            // [SỬA LỖI] Luôn đặt secure: true và thêm path: '/'
             res.cookie('adminToken', adminToken, {
                 httpOnly: true,
-                secure: true, // Bắt buộc phải là true khi sameSite='none'
-                sameSite: 'none', // Cho phép gửi cookie từ github.io đến onrender.com
+                secure: true, // Luôn là true vì Render dùng HTTPS
+                sameSite: 'none',
                 maxAge: 8 * 3600000,
+                path: '/', // Thêm path để đảm bảo cookie hợp lệ cho mọi route
             });
             res.json({ success: true, message: 'Đăng nhập thành công!' });
         } else {
@@ -329,7 +330,13 @@ app.post('/admin/verify-tfa', async (req, res) => {
 });
 
 app.get('/admin/verify-session', authenticateAdminToken, (req, res) => res.json({ success: true, loggedIn: true }));
-app.post('/admin/logout', (req, res) => { res.clearCookie('adminToken', { httpOnly: true, secure: true, sameSite: 'none' }); res.json({ success: true }); });
+
+// [SỬA LỖI] Thêm các thuộc tính tương tự vào clearCookie
+app.post('/admin/logout', (req, res) => { 
+    res.clearCookie('adminToken', { httpOnly: true, secure: true, sameSite: 'none', path: '/' }); 
+    res.json({ success: true }); 
+});
+
 app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => { 
     if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
     try {

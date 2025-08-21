@@ -30,7 +30,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors({
     origin: [
         'https://viet-8101.github.io',
-        'https://viet-8101.github.io/admin-dashboard-doraemon/',
+        'https://viet-8101.github.io/admin-dashboard-doraemon',
         'http://localhost:5173',
         'https://admin-dashboard-doraemon.onrender.com',
     ],
@@ -461,3 +461,4 @@ app.delete('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => 
         if (!firebaseAdminInitialized) console.warn('CẢNH BÁO: Firestore không khả dụng.');
     });
 })();
+

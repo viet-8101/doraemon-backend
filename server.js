@@ -8,7 +8,7 @@ import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
 import speakeasy from 'speakeasy';
 import qrcode from 'qrcode';
-import bcrypt from 'bcrypt'; // Thêm bcrypt để so sánh hash
+import bcrypt from 'bcryptjs'; // Thêm bcrypt để so sánh hash
 
 // Firebase Admin SDK imports
 import admin from 'firebase-admin';
@@ -461,3 +461,4 @@ app.delete('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => 
         if (!firebaseAdminInitialized) console.warn('CẢNH BÁO: Firestore không khả dụng.');
     });
 })();
+

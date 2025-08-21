@@ -314,13 +314,14 @@ app.post('/admin/verify-tfa', async (req, res) => {
         if (verified) {
             const adminToken = jwt.sign({ username: decoded.username, role: 'admin' }, JWT_SECRET, { expiresIn: '8h' });
             
-            // [SỬA LỖI] Luôn đặt secure: true và thêm path: '/'
+            // [SỬA LỖI QUAN TRỌNG] Thêm thuộc tính domain
             res.cookie('adminToken', adminToken, {
                 httpOnly: true,
-                secure: true, // Luôn là true vì Render dùng HTTPS
+                secure: true,
                 sameSite: 'none',
                 maxAge: 8 * 3600000,
-                path: '/', // Thêm path để đảm bảo cookie hợp lệ cho mọi route
+                path: '/',
+                domain: 'onrender.com' // Chỉ định cookie này dành cho domain onrender.com
             });
             res.json({ success: true, message: 'Đăng nhập thành công!' });
         } else {
@@ -331,9 +332,15 @@ app.post('/admin/verify-tfa', async (req, res) => {
 
 app.get('/admin/verify-session', authenticateAdminToken, (req, res) => res.json({ success: true, loggedIn: true }));
 
-// [SỬA LỖI] Thêm các thuộc tính tương tự vào clearCookie
+// [SỬA LỖI QUAN TRỌNG] Thêm thuộc tính domain khi xóa cookie để đảm bảo xóa đúng
 app.post('/admin/logout', (req, res) => { 
-    res.clearCookie('adminToken', { httpOnly: true, secure: true, sameSite: 'none', path: '/' }); 
+    res.clearCookie('adminToken', { 
+        httpOnly: true, 
+        secure: true, 
+        sameSite: 'none', 
+        path: '/',
+        domain: 'onrender.com'
+    }); 
     res.json({ success: true }); 
 });
 

@@ -30,7 +30,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors({
     origin: [
         'https://viet-8101.github.io',
-        'https://viet-8101.github.io/admin-dashboard-doraemon',
+        'https://viet-8101.github.io/admin-dashboard-doraemon/',
         'http://localhost:5173',
         'https://admin-dashboard-doraemon.onrender.com',
     ],
@@ -166,7 +166,7 @@ function sanitizeInput(input) {
 }
 
 async function securityMiddleware(req, res, next) { 
-    const clientIpRaw = getClientIp(req);
+     const clientIpRaw = getClientIp(req);
     const ip = normalizeIp(clientIpRaw);
     const visitorId = req.body.visitorId;
 
@@ -314,14 +314,12 @@ app.post('/admin/verify-tfa', async (req, res) => {
         if (verified) {
             const adminToken = jwt.sign({ username: decoded.username, role: 'admin' }, JWT_SECRET, { expiresIn: '8h' });
             
-            // [SỬA LỖI QUAN TRỌNG] Thêm thuộc tính domain
+            // [SỬA LỖI] Thay đổi sameSite thành 'none' để cho phép cookie cross-domain
             res.cookie('adminToken', adminToken, {
                 httpOnly: true,
-                secure: true,
-                sameSite: 'none',
+                secure: true, // Bắt buộc phải là true khi sameSite='none'
+                sameSite: 'none', // Cho phép gửi cookie từ github.io đến onrender.com
                 maxAge: 8 * 3600000,
-                path: '/',
-                domain: 'onrender.com' // Chỉ định cookie này dành cho domain onrender.com
             });
             res.json({ success: true, message: 'Đăng nhập thành công!' });
         } else {
@@ -331,19 +329,7 @@ app.post('/admin/verify-tfa', async (req, res) => {
 });
 
 app.get('/admin/verify-session', authenticateAdminToken, (req, res) => res.json({ success: true, loggedIn: true }));
-
-// [SỬA LỖI QUAN TRỌNG] Thêm thuộc tính domain khi xóa cookie để đảm bảo xóa đúng
-app.post('/admin/logout', (req, res) => { 
-    res.clearCookie('adminToken', { 
-        httpOnly: true, 
-        secure: true, 
-        sameSite: 'none', 
-        path: '/',
-        domain: 'onrender.com'
-    }); 
-    res.json({ success: true }); 
-});
-
+app.post('/admin/logout', (req, res) => { res.clearCookie('adminToken', { httpOnly: true, secure: true, sameSite: 'none' }); res.json({ success: true }); });
 app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => { 
     if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
     try {
@@ -461,4 +447,3 @@ app.delete('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => 
         if (!firebaseAdminInitialized) console.warn('CẢNH BÁO: Firestore không khả dụng.');
     });
 })();
-

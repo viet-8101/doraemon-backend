@@ -8,6 +8,7 @@ import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
 import speakeasy from 'speakeasy';
 import qrcode from 'qrcode';
+import bcrypt from 'bcrypt'; // Thêm bcrypt để so sánh hash
 
 // Firebase Admin SDK imports
 import admin from 'firebase-admin';
@@ -53,17 +54,20 @@ app.use((req, res, next) => {
 
 // --- 3. BIẾN BẢO MẬT VÀ CẤU HÌNH ---
 const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+// THAY ĐỔI CÁC DÒNG SAU
+const ADMIN_USERNAME_HASH = process.env.ADMIN_USERNAME_HASH;
+const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH;
 const JWT_SECRET = process.env.JWT_SECRET;
 
 if (!JWT_SECRET) {
     console.error('Lỗi: JWT_SECRET chưa được đặt trong biến môi trường! Server sẽ không khởi động.');
     process.exit(1);
 }
-if (!RECAPTCHA_SECRET_KEY || !ADMIN_USERNAME || !ADMIN_PASSWORD) {
-    console.error('Lỗi: Thiếu các biến môi trường quan trọng!');
+// VÀ CẬP NHẬT KIỂM TRA LỖI
+if (!RECAPTCHA_SECRET_KEY || !ADMIN_USERNAME_HASH || !ADMIN_PASSWORD_HASH) {
+    console.error('Lỗi: Thiếu các biến môi trường quan trọng (bao gồm cả HASH của admin credentials)!');
 }
+
 
 // --- KHỞI TẠO FIREBASE ---
 let db;
@@ -273,9 +277,17 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
 app.post('/admin/login', async (req, res) => {
     const { username, password } = req.body;
     if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
+    // Thêm kiểm tra đầu vào
+    if (!username || !password) return res.status(400).json({ error: 'Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu.' });
 
-    if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
-        try {
+    try {
+        // 1. So sánh hash của username
+        const isUsernameMatch = await bcrypt.compare(username, ADMIN_USERNAME_HASH);
+        // 2. So sánh hash của password
+        const isPasswordMatch = await bcrypt.compare(password, ADMIN_PASSWORD_HASH);
+
+        if (isUsernameMatch && isPasswordMatch) {
+            // --- Logic xử lý 2FA (giữ nguyên) ---
             const adminData = await getAdminData();
             let tfaSecret = adminData.tfa_secret;
             let qrCodeUrl = null;
@@ -291,11 +303,13 @@ app.post('/admin/login', async (req, res) => {
 
             const tfaToken = jwt.sign({ username }, JWT_SECRET, { expiresIn: '5m' });
             res.json({ success: true, message, tfaToken, qrCodeUrl });
-        } catch (error) {
-            res.status(500).json({ error: 'Lỗi server khi xử lý 2FA.' });
+        } else {
+            // Nếu không khớp, trả về lỗi chung để tránh tiết lộ thông tin
+            res.status(401).json({ error: 'Tên đăng nhập hoặc mật khẩu không đúng.' });
         }
-    } else {
-        res.status(401).json({ error: 'Tên đăng nhập hoặc mật khẩu không đúng.' });
+    } catch (error) {
+        console.error('Lỗi trong quá trình đăng nhập admin:', error);
+        res.status(500).json({ error: 'Lỗi server khi xử lý đăng nhập.' });
     }
 });
 

@@ -129,8 +129,10 @@ async function loadDictionaryFromFirestore() {
 
 // --- HỖ TRỢ BẢO MẬT VÀ FIREBASE ---
 const BAN_DURATION_MS = 12 * 60 * 60 * 1000;
+const LOGIN_BAN_DURATION_MS = 60 * 60 * 1000;
 const PERMANENT_BAN_VALUE = Number.MAX_SAFE_INTEGER;
 const FAILED_ATTEMPTS_THRESHOLD = 5;
+const LOGIN_ATTEMPTS_THRESHOLD = 10;
 const FAILED_ATTEMPTS_RESET_MS = 30 * 60 * 1000;
 
 const getAdminDataDocRef = () => {
@@ -249,8 +251,41 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
         
         const recaptchaData = await verificationResponse.json();
         if (!recaptchaData.success) {
-            // await handleFailedAttempt(ip, visitorId); // Cân nhắc có nên ban vì reCAPTCHA sai không
+            // TĂNG BỘ ĐẾM RECAPTCHA THẤT BẠI TOÀN CỤC
+            await updateAdminData({ total_failed_recaptcha: FieldValue.increment(1) });
+
+            // XỬ LÝ GIỚI HẠN RECAPTCHA THẤT BẠI CHO IP
+            const adminData = await getAdminData();
+            const failedAttempts = adminData.failedAttempts || {};
+            const bannedIps = adminData.banned_ips || {};
+            
+            if (!failedAttempts[ip]) failedAttempts[ip] = {};
+            
+            const currentRecaptchaFails = (failedAttempts[ip]['false recaptcha'] || 0) + 1;
+            failedAttempts[ip]['false recaptcha'] = currentRecaptchaFails;
+
+            if (currentRecaptchaFails >= FAILED_ATTEMPTS_THRESHOLD) {
+                const banExpiresAt = Date.now() + BAN_DURATION_MS; // Cấm 12 giờ
+                bannedIps[ip] = banExpiresAt;
+                delete failedAttempts[ip]['false recaptcha']; // Xóa bộ đếm sau khi cấm
+                if(Object.keys(failedAttempts[ip]).length === 0) delete failedAttempts[ip];
+                
+                await updateAdminData({ banned_ips: bannedIps, failedAttempts });
+                console.log(`[AUTO-BAN] IP ${ip} đã bị cấm 12 giờ do reCAPTCHA thất bại quá nhiều lần.`);
+            } else {
+                await updateAdminData({ failedAttempts });
+            }
+            
             return res.status(401).json({ error: 'Xác thực reCAPTCHA thất bại.' });
+        }
+        
+        // XÓA BỘ ĐẾM THẤT BẠI KHI THÀNH CÔNG
+        const adminData = await getAdminData();
+        if (adminData.failedAttempts && adminData.failedAttempts[ip] && adminData.failedAttempts[ip]['false recaptcha']) {
+            const failedAttempts = adminData.failedAttempts;
+            delete failedAttempts[ip]['false recaptcha'];
+            if(Object.keys(failedAttempts[ip]).length === 0) delete failedAttempts[ip];
+            await updateAdminData({ failedAttempts });
         }
         
         await updateAdminData({ total_requests: FieldValue.increment(1) });
@@ -276,19 +311,31 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
 
 app.post('/admin/login', async (req, res) => {
     const { username, password } = req.body;
+    const ip = normalizeIp(getClientIp(req));
+
     if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
-    // Thêm kiểm tra đầu vào
     if (!username || !password) return res.status(400).json({ error: 'Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu.' });
 
     try {
-        // 1. So sánh hash của username
+        const adminData = await getAdminData();
+        const failedAttempts = adminData.failedAttempts || {};
+
+        // KIỂM TRA IP CÓ BỊ KHÓA ĐĂNG NHẬP KHÔNG
+        if (failedAttempts[ip]?.lockoutUntil && Date.now() < failedAttempts[ip].lockoutUntil) {
+            const timeLeft = Math.ceil((failedAttempts[ip].lockoutUntil - Date.now()) / 60000);
+            return res.status(429).json({ error: `Bạn đã nhập sai quá nhiều lần. Vui lòng thử lại sau ${timeLeft} phút.` });
+        }
+
         const isUsernameMatch = await bcrypt.compare(username, ADMIN_USERNAME_HASH);
-        // 2. So sánh hash của password
         const isPasswordMatch = await bcrypt.compare(password, ADMIN_PASSWORD_HASH);
 
         if (isUsernameMatch && isPasswordMatch) {
-            // --- Logic xử lý 2FA (giữ nguyên) ---
-            const adminData = await getAdminData();
+            // XÓA LỊCH SỬ ĐĂNG NHẬP SAI KHI THÀNH CÔNG
+            if (failedAttempts[ip]) {
+                delete failedAttempts[ip];
+                await updateAdminData({ failedAttempts });
+            }
+
             let tfaSecret = adminData.tfa_secret;
             let qrCodeUrl = null;
             let message = 'Vui lòng nhập mã xác thực từ ứng dụng của bạn.';
@@ -304,7 +351,20 @@ app.post('/admin/login', async (req, res) => {
             const tfaToken = jwt.sign({ username }, JWT_SECRET, { expiresIn: '5m' });
             res.json({ success: true, message, tfaToken, qrCodeUrl });
         } else {
-            // Nếu không khớp, trả về lỗi chung để tránh tiết lộ thông tin
+            // GHI NHẬN ĐĂNG NHẬP THẤT BẠI
+            if (!failedAttempts[ip]) failedAttempts[ip] = {};
+            const currentFails = (failedAttempts[ip].login || 0) + 1;
+            failedAttempts[ip].login = currentFails;
+            failedAttempts[ip].lastAttempt = Date.now();
+            
+            if (currentFails >= LOGIN_ATTEMPTS_THRESHOLD) {
+                failedAttempts[ip].lockoutUntil = Date.now() + LOGIN_BAN_DURATION_MS; // Khóa 1 giờ
+                console.log(`[LOGIN-LOCKOUT] IP ${ip} đã bị khóa đăng nhập trong 1 giờ.`);
+                await updateAdminData({ failedAttempts });
+                return res.status(429).json({ error: 'Bạn đã nhập sai quá nhiều lần. IP của bạn đã bị tạm khóa trong 1 giờ.' });
+            }
+
+            await updateAdminData({ failedAttempts });
             res.status(401).json({ error: 'Tên đăng nhập hoặc mật khẩu không đúng.' });
         }
     } catch (error) {
@@ -328,11 +388,10 @@ app.post('/admin/verify-tfa', async (req, res) => {
         if (verified) {
             const adminToken = jwt.sign({ username: decoded.username, role: 'admin' }, JWT_SECRET, { expiresIn: '8h' });
             
-            // [SỬA LỖI] Thay đổi sameSite thành 'none' để cho phép cookie cross-domain
             res.cookie('adminToken', adminToken, {
                 httpOnly: true,
-                secure: true, // Bắt buộc phải là true khi sameSite='none'
-                sameSite: 'none', // Cho phép gửi cookie từ github.io đến onrender.com
+                secure: true,
+                sameSite: 'none',
                 maxAge: 2 * 3600000,
             });
             res.json({ success: true, message: 'Đăng nhập thành công!' });
@@ -461,4 +520,3 @@ app.delete('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => 
         if (!firebaseAdminInitialized) console.warn('CẢNH BÁO: Firestore không khả dụng.');
     });
 })();
-

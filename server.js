@@ -392,7 +392,7 @@ app.post('/admin/verify-tfa', async (req, res) => {
                 httpOnly: true,
                 secure: true,
                 sameSite: 'none',
-                maxAge: 2 * 3600000,
+                maxAge: 1 * 3600000,
             });
             res.json({ success: true, message: 'Đăng nhập thành công!' });
         } else {
@@ -520,3 +520,4 @@ app.delete('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => 
         if (!firebaseAdminInitialized) console.warn('CẢNH BÁO: Firestore không khả dụng.');
     });
 })();
+

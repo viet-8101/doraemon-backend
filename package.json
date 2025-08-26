@@ -1,26 +1,26 @@
 {
   "name": "doraemon-backend",
   "version": "1.0.0",
-  "description": "Backend for Doraemon dictionary app",
-  "main": "server.js",
-  "type": "module",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "cookie-parser": "^1.4.6",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "firebase-admin": "^12.3.0",
-    "jsonwebtoken": "^9.0.2",
-    "node-fetch": "^3.3.2",
-    "qrcode": "^1.5.3",
-    "speakeasy": "^2.0.0"
-  }
+  "description": "Backend for Doraemon dictionary app",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "firebase-admin": "^12.3.0",
+    "jsonwebtoken": "^9.0.2",
+    "node-fetch": "^3.3.2",
+    "qrcode": "^1.5.3",
+    "speakeasy": "^2.0.0"
+  }
 }

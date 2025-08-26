@@ -1,6 +1,6 @@
 {
-  "name": "doraemon-backend",
-  "version": "1.0.0",
+  "name": "doraemon-backend",
+  "version": "1.0.0",
   "description": "Backend for Doraemon dictionary app",
   "main": "server.js",
   "type": "module",

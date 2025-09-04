@@ -115,6 +115,7 @@ async function loadDictionaryFromFirestore() {
         dictionarySnapshot.forEach(doc => {
             const data = doc.data();
             if(data.key && data.value) {
+                // Chuyển key thành chữ thường khi tải vào cache
                 newDictionaryMap.set(data.key.toLowerCase(), data.value);
             }
         });
@@ -507,9 +508,10 @@ app.post('/admin/dictionary', authenticateAdminToken, async (req, res) => {
     try {
         const { key, value } = req.body;
         if (!key || !value) return res.status(400).json({ error: 'Thiếu key hoặc value.' });
-        const docRef = await db.collection('dictionary').add({ key, value });
+        // Chuyển key thành chữ thường khi thêm vào Firestore
+        await db.collection('dictionary').add({ key: key.toLowerCase(), value });
         await loadDictionaryFromFirestore();
-        res.status(201).json({ id: docRef.id, key, value });
+        res.status(201).json({ success: true, message: 'Đã thêm từ mới thành công.' });
     } catch (error) { res.status(500).json({ error: 'Lỗi khi thêm từ mới.' }); }
 });
 app.put('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => {
@@ -518,7 +520,8 @@ app.put('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => {
         const { id } = req.params;
         const { key, value } = req.body;
         if (!key || !value) return res.status(400).json({ error: 'Thiếu key hoặc value.' });
-        await db.collection('dictionary').doc(id).update({ key, value });
+        // Chuyển key thành chữ thường khi cập nhật Firestore
+        await db.collection('dictionary').doc(id).update({ key: key.toLowerCase(), value });
         await loadDictionaryFromFirestore();
         res.json({ success: true });
     } catch (error) { res.status(500).json({ error: 'Lỗi khi cập nhật từ.' }); }

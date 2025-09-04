@@ -1,4 +1,3 @@
-
 // sever.js
 // --- 1. IMPORT CÁC THƯ VIỆN ---
 import express from 'express';
@@ -9,7 +8,7 @@ import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
 import speakeasy from 'speakeasy';
 import qrcode from 'qrcode';
-import bcrypt from 'bcryptjs'; // Thêm bcrypt để so sánh hash
+import bcrypt from 'bcryptjs';
 
 // Firebase Admin SDK imports
 import admin from 'firebase-admin';
@@ -55,7 +54,6 @@ app.use((req, res, next) => {
 
 // --- 3. BIẾN BẢO MẬT VÀ CẤU HÌNH ---
 const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
-// THAY ĐỔI CÁC DÒNG SAU
 const ADMIN_USERNAME_HASH = process.env.ADMIN_USERNAME_HASH;
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH;
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -64,11 +62,9 @@ if (!JWT_SECRET) {
     console.error('Lỗi: JWT_SECRET chưa được đặt trong biến môi trường! Server sẽ không khởi động.');
     process.exit(1);
 }
-// VÀ CẬP NHẬT KIỂM TRA LỖI
 if (!RECAPTCHA_SECRET_KEY || !ADMIN_USERNAME_HASH || !ADMIN_PASSWORD_HASH) {
     console.error('Lỗi: Thiếu các biến môi trường quan trọng (bao gồm cả HASH của admin credentials)!');
 }
-
 
 // --- KHỞI TẠO FIREBASE ---
 let db;
@@ -102,29 +98,53 @@ async function initializeFirebaseAdmin() {
 
 const appId = process.env.RENDER_SERVICE_ID || 'default-render-app-id';
 
-// --- TỪ ĐIỂN DORAEMON TỪ DATABASE ---
-let sortedDoraemonEntries = [];
+// --- BỘ NHỚ CACHE DỮ LIỆU ---
+let dictionaryMap = new Map();
+let adminDataCache = {};
+const ADMIN_DATA_CACHE_TTL_MS = 5 * 60 * 1000; // 5 phút
 
 async function loadDictionaryFromFirestore() {
     if (!db) {
         console.warn('Firestore chưa sẵn sàng, không thể tải từ điển.');
-        sortedDoraemonEntries = [];
+        dictionaryMap.clear();
         return;
     }
     try {
         const dictionarySnapshot = await db.collection('dictionary').get();
-        const dictionary = {};
+        const newDictionaryMap = new Map();
         dictionarySnapshot.forEach(doc => {
             const data = doc.data();
             if(data.key && data.value) {
-                dictionary[data.key] = data.value;
+                newDictionaryMap.set(data.key.toLowerCase(), data.value);
             }
         });
-        
-        sortedDoraemonEntries = Object.entries(dictionary).sort((a, b) => b[0].length - a[0].length);
-        console.log(`[Dictionary] Đã tải thành công ${sortedDoraemonEntries.length} từ khóa từ Firestore.`);
+        dictionaryMap = newDictionaryMap;
+        console.log(`[Dictionary] Đã tải thành công ${dictionaryMap.size} từ khóa từ Firestore.`);
     } catch (error) {
         console.error('[Dictionary] Lỗi khi tải từ điển từ Firestore:', error);
+    }
+}
+
+async function reloadAdminDataCache() {
+    console.log('[Cache] Đang làm mới cache admin data từ Firestore...');
+    const docRef = getAdminDataDocRef();
+    if (!docRef) return;
+    try {
+        const docSnap = await docRef.get();
+        if (docSnap.exists) {
+            adminDataCache.data = docSnap.data();
+        } else {
+            const initialData = {
+                banned_ips: {}, banned_fingerprints: {}, total_requests: 0,
+                total_failed_recaptcha: 0, failedAttempts: {}, tfa_secret: null,
+            };
+            await docRef.set(initialData);
+            adminDataCache.data = initialData;
+        }
+        adminDataCache.last_updated = Date.now();
+        console.log('[Cache] Đã làm mới cache admin data thành công.');
+    } catch (error) {
+        console.error('[Cache] Lỗi khi làm mới cache admin data:', error);
     }
 }
 
@@ -141,39 +161,37 @@ const getAdminDataDocRef = () => {
     return db.collection('artifacts').doc(appId).collection('public').doc('data').collection('admin_data').doc('main_data');
 };
 async function getAdminData() {
-    const docRef = getAdminDataDocRef();
-    if (!docRef) return {};
-    try {
-        const docSnap = await docRef.get();
-        if (docSnap.exists) {
-            return docSnap.data();
-        } else {
-            const initialData = {
-                banned_ips: {}, banned_fingerprints: {}, total_requests: 0,
-                total_failed_recaptcha: 0, failedAttempts: {}, tfa_secret: null,
-            };
-            await docRef.set(initialData);
-            return initialData;
-        }
-    } catch (error) {
-        console.error('Lỗi khi lấy admin data từ Firestore:', error);
-        return {};
+    const now = Date.now();
+    // Sử dụng cache nếu còn hiệu lực
+    if (adminDataCache.data && (now - adminDataCache.last_updated) < ADMIN_DATA_CACHE_TTL_MS) {
+        return adminDataCache.data;
     }
+    // Lấy dữ liệu từ Firestore và làm mới cache
+    await reloadAdminDataCache();
+    return adminDataCache.data || {};
 }
 async function updateAdminData(dataToUpdate) {
     const docRef = getAdminDataDocRef();
-    if (docRef) await docRef.update(dataToUpdate).catch(e => console.error('Lỗi khi cập nhật admin data:', e));
+    if (docRef) {
+        try {
+            await docRef.update(dataToUpdate);
+            // Cập nhật local cache ngay lập tức sau khi cập nhật Firestore thành công
+            adminDataCache.data = { ...adminDataCache.data, ...dataToUpdate };
+            adminDataCache.last_updated = Date.now();
+        } catch (e) {
+            console.error('Lỗi khi cập nhật admin data:', e);
+        }
+    }
 }
 function getClientIp(req) { return (req.headers['x-forwarded-for'] || req.ip).split(',')[0].trim(); }
 function normalizeIp(ip) { return ip && ip.startsWith('::ffff:') ? ip.substring(7) : ip; }
 function sanitizeInput(input) {
     if (typeof input !== 'string') return '';
-    let sanitized = input.trim().toLowerCase().substring(0, 200);
-    return sanitized.replace(/[^a-z0-9àáạảãăắằặẳẵâấầậẩẫèéẹẻẽêếềệểễìíịỉĩòóọỏõôốồộổỗơớờợởỡùúụủũưứừựửữđ\s.,!?-]/g, '');
+    return input.trim().toLowerCase().substring(0, 500);
 }
 
-async function securityMiddleware(req, res, next) { 
-     const clientIpRaw = getClientIp(req);
+async function securityMiddleware(req, res, next) {
+    const clientIpRaw = getClientIp(req);
     const ip = normalizeIp(clientIpRaw);
     const visitorId = req.body.visitorId;
 
@@ -236,14 +254,14 @@ function authenticateAdminToken(req, res, next) {
 app.get('/', (req, res) => res.status(200).send('Backend Doraemon đang chạy.'));
 
 app.post('/giai-ma', securityMiddleware, async (req, res) => {
-    if (sortedDoraemonEntries.length === 0) {
+    if (dictionaryMap.size === 0) {
         return res.status(503).json({ error: 'Từ điển chưa sẵn sàng, vui lòng thử lại sau.' });
     }
     const { userInput, recaptchaToken, visitorId } = req.body;
     const ip = normalizeIp(getClientIp(req));
     if (!userInput || !recaptchaToken) return res.status(400).json({ error: 'Thiếu dữ liệu.' });
     
-     try {
+    try {
         const recaptchaVerificationUrl = `https://www.google.com/recaptcha/api/siteverify`;
         const params = new URLSearchParams({ secret: RECAPTCHA_SECRET_KEY, response: recaptchaToken, remoteip: ip });
 
@@ -252,10 +270,7 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
         
         const recaptchaData = await verificationResponse.json();
         if (!recaptchaData.success) {
-            // TĂNG BỘ ĐẾM RECAPTCHA THẤT BẠI TOÀN CỤC
             await updateAdminData({ total_failed_recaptcha: FieldValue.increment(1) });
-
-            // XỬ LÝ GIỚI HẠN RECAPTCHA THẤT BẠI CHO IP
             const adminData = await getAdminData();
             const failedAttempts = adminData.failedAttempts || {};
             const bannedIps = adminData.banned_ips || {};
@@ -266,9 +281,9 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
             failedAttempts[ip]['false recaptcha'] = currentRecaptchaFails;
 
             if (currentRecaptchaFails >= FAILED_ATTEMPTS_THRESHOLD) {
-                const banExpiresAt = Date.now() + BAN_DURATION_MS; // Cấm 12 giờ
+                const banExpiresAt = Date.now() + BAN_DURATION_MS;
                 bannedIps[ip] = banExpiresAt;
-                delete failedAttempts[ip]['false recaptcha']; // Xóa bộ đếm sau khi cấm
+                delete failedAttempts[ip]['false recaptcha'];
                 if(Object.keys(failedAttempts[ip]).length === 0) delete failedAttempts[ip];
                 
                 await updateAdminData({ banned_ips: bannedIps, failedAttempts });
@@ -280,7 +295,6 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
             return res.status(401).json({ error: 'Xác thực reCAPTCHA thất bại.' });
         }
         
-        // XÓA BỘ ĐẾM THẤT BẠI KHI THÀNH CÔNG
         const adminData = await getAdminData();
         if (adminData.failedAttempts && adminData.failedAttempts[ip] && adminData.failedAttempts[ip]['false recaptcha']) {
             const failedAttempts = adminData.failedAttempts;
@@ -291,16 +305,25 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
         
         await updateAdminData({ total_requests: FieldValue.increment(1) });
         
-        let text = sanitizeInput(userInput);
+        // --- LOGIC GIẢI MÃ CẢI TIẾN ---
+        const sanitizedInput = sanitizeInput(userInput);
+        const words = sanitizedInput.split(/\s+/).filter(word => word.length > 0);
+        let replacedWords = [];
         let replaced = false;
-        for (const [k, v] of sortedDoraemonEntries) {
-            const re = new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-            if (re.test(text)) {
-                text = text.replace(re, v);
+
+        for (const word of words) {
+            const replacement = dictionaryMap.get(word);
+            if (replacement) {
+                replacedWords.push(replacement);
                 replaced = true;
+            } else {
+                replacedWords.push(word);
             }
         }
-        res.json({ success: true, ketQua: replaced ? text : "Không tìm thấy từ khóa phù hợp." });
+
+        const ketQua = replacedWords.join(' ');
+        res.json({ success: true, ketQua: replaced ? ketQua : "Không tìm thấy từ khóa phù hợp." });
+        // --- KẾT THÚC LOGIC GIẢI MÃ CẢI TIẾN ---
 
     } catch (error) {
         console.error('Lỗi /giai-ma:', error);
@@ -321,7 +344,6 @@ app.post('/admin/login', async (req, res) => {
         const adminData = await getAdminData();
         const failedAttempts = adminData.failedAttempts || {};
 
-        // KIỂM TRA IP CÓ BỊ KHÓA ĐĂNG NHẬP KHÔNG
         if (failedAttempts[ip]?.lockoutUntil && Date.now() < failedAttempts[ip].lockoutUntil) {
             const timeLeft = Math.ceil((failedAttempts[ip].lockoutUntil - Date.now()) / 60000);
             return res.status(429).json({ error: `Bạn đã nhập sai quá nhiều lần. Vui lòng thử lại sau ${timeLeft} phút.` });
@@ -331,7 +353,6 @@ app.post('/admin/login', async (req, res) => {
         const isPasswordMatch = await bcrypt.compare(password, ADMIN_PASSWORD_HASH);
 
         if (isUsernameMatch && isPasswordMatch) {
-            // XÓA LỊCH SỬ ĐĂNG NHẬP SAI KHI THÀNH CÔNG
             if (failedAttempts[ip]) {
                 delete failedAttempts[ip];
                 await updateAdminData({ failedAttempts });
@@ -352,14 +373,13 @@ app.post('/admin/login', async (req, res) => {
             const tfaToken = jwt.sign({ username }, JWT_SECRET, { expiresIn: '5m' });
             res.json({ success: true, message, tfaToken, qrCodeUrl });
         } else {
-            // GHI NHẬN ĐĂNG NHẬP THẤT BẠI
             if (!failedAttempts[ip]) failedAttempts[ip] = {};
             const currentFails = (failedAttempts[ip].login || 0) + 1;
             failedAttempts[ip].login = currentFails;
             failedAttempts[ip].lastAttempt = Date.now();
             
             if (currentFails >= LOGIN_ATTEMPTS_THRESHOLD) {
-                failedAttempts[ip].lockoutUntil = Date.now() + LOGIN_BAN_DURATION_MS; // Khóa 1 giờ
+                failedAttempts[ip].lockoutUntil = Date.now() + LOGIN_BAN_DURATION_MS;
                 console.log(`[LOGIN-LOCKOUT] IP ${ip} đã bị khóa đăng nhập trong 1 giờ.`);
                 await updateAdminData({ failedAttempts });
                 return res.status(429).json({ error: 'Bạn đã nhập sai quá nhiều lần. IP của bạn đã bị tạm khóa trong 1 giờ.' });
@@ -393,7 +413,7 @@ app.post('/admin/verify-tfa', async (req, res) => {
                 httpOnly: true,
                 secure: true,
                 sameSite: 'none',
-                maxAge: 1 * 3600000,
+                maxAge: 8 * 3600000,
             });
             res.json({ success: true, message: 'Đăng nhập thành công!' });
         } else {
@@ -404,7 +424,7 @@ app.post('/admin/verify-tfa', async (req, res) => {
 
 app.get('/admin/verify-session', authenticateAdminToken, (req, res) => res.json({ success: true, loggedIn: true }));
 app.post('/admin/logout', (req, res) => { res.clearCookie('adminToken', { httpOnly: true, secure: true, sameSite: 'none' }); res.json({ success: true }); });
-app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => { 
+app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => {
     if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
     try {
         const adminData = await getAdminData();
@@ -433,7 +453,7 @@ app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => {
         res.status(500).json({ error: 'Lỗi khi lấy dữ liệu admin.' });
     }
 });
-app.post('/admin/ban', authenticateAdminToken, async (req, res) => { 
+app.post('/admin/ban', authenticateAdminToken, async (req, res) => {
     const { type, value, duration } = req.body;
     if (!db || !type || !value) return res.status(400).json({ error: 'Yêu cầu không hợp lệ.' });
     try {
@@ -449,7 +469,7 @@ app.post('/admin/ban', authenticateAdminToken, async (req, res) => {
         res.status(500).json({ error: 'Lỗi khi ban.' });
     }
 });
-app.post('/admin/unban', authenticateAdminToken, async (req, res) => { 
+app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
     const { type, value } = req.body;
     if (!db || !type || !value) return res.status(400).json({ error: 'Yêu cầu không hợp lệ.' });
     try {
@@ -516,9 +536,11 @@ app.delete('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => 
 (async () => {
     await initializeFirebaseAdmin();
     await loadDictionaryFromFirestore();
+    await reloadAdminDataCache();
+    // Tự động làm mới cache admin data mỗi 5 phút
+    setInterval(reloadAdminDataCache, ADMIN_DATA_CACHE_TTL_MS);
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`Server Backend Doraemon đang chạy tại cổng ${PORT}`);
         if (!firebaseAdminInitialized) console.warn('CẢNH BÁO: Firestore không khả dụng.');
     });
 })();
-

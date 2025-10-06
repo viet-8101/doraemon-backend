@@ -487,7 +487,13 @@ app.post('/admin/dictionary', authenticateAdminToken, async (req, res) => {
         // <<< TỐI ƯU: Xóa lệnh gọi thủ công, onSnapshot sẽ tự cập nhật cache
         // await loadDictionaryFromFirestore();
         res.status(201).json({ id: docRef.id, key, value });
-    } catch (error) { res.status(500).json({ error: 'Lỗi khi thêm từ mới.' }); }
+    } catch (error) { 
+        // --- SỬA LỖI ---
+        // Thêm console.error để ghi lại lỗi chi tiết trên server, giúp dễ dàng chẩn đoán.
+        console.error("Lỗi khi thêm từ khóa mới vào Firestore:", error);
+        res.status(500).json({ error: 'Lỗi khi thêm từ mới.' }); 
+        // --- KẾT THÚC SỬA LỖI ---
+    }
 });
 app.put('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => {
     if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });

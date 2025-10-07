@@ -98,20 +98,20 @@ async function initializeFirebaseAdmin() {
 
 const appId = process.env.RENDER_SERVICE_ID || 'default-render-app-id';
 
-// --- <<< BẮT ĐẦU PHẦN CACHE MỚI ---
+// --- <<< BẮT ĐẦU PHẦN CACHE ĐÃ SỬA ---
 // BIẾN CACHE TỪ ĐIỂN
 let sortedDoraemonEntries = [];
 
-// HÀM LẮNG NGHE THAY ĐỔI TỪ ĐIỂN VÀ CẬP NHẬT CACHE
-function listenForDictionaryChanges() {
+// HÀM LÀM MỚI CACHE TỪ ĐIỂN TỪ FIRESTORE
+async function refreshDictionaryCache() {
     if (!db) {
-        console.warn('[Cache] Firestore chưa sẵn sàng, không thể khởi tạo cache từ điển.');
+        console.warn('[Cache] Firestore chưa sẵn sàng, không thể làm mới cache từ điển.');
         return;
     }
     
-    console.log('[Cache] Bắt đầu lắng nghe thay đổi từ điển từ Firestore...');
-    
-    db.collection('dictionary').onSnapshot(snapshot => {
+    try {
+        console.log('[Cache] Bắt đầu làm mới cache từ điển từ Firestore...');
+        const snapshot = await db.collection('dictionary').get();
         const dictionary = {};
         snapshot.forEach(doc => {
             const data = doc.data();
@@ -120,15 +120,15 @@ function listenForDictionaryChanges() {
             }
         });
         
-        // Sắp xếp các mục từ điển theo độ dài của key (từ dài đến ngắn) để ưu tiên khớp các cụm từ dài hơn
+        // Sắp xếp lại từ điển và cập nhật cache
         sortedDoraemonEntries = Object.entries(dictionary).sort((a, b) => b[0].length - a[0].length);
         
-        console.log(`[Cache] Cache từ điển đã được cập nhật. Tổng số từ khóa: ${sortedDoraemonEntries.length}`);
-    }, error => {
-        console.error('[Cache] Lỗi khi lắng nghe thay đổi từ điển:', error);
-    });
+        console.log(`[Cache] Cache từ điển đã được làm mới. Tổng số từ khóa: ${sortedDoraemonEntries.length}`);
+    } catch (error) {
+        console.error('[Cache] Lỗi khi làm mới cache từ điển:', error);
+    }
 }
-// --- <<< KẾT THÚC PHẦN CACHE MỚI ---
+// --- <<< KẾT THÚC PHẦN CACHE ĐÃ SỬA ---
 
 // --- HỖ TRỢ BẢO MẬT VÀ FIREBASE ---
 const BAN_DURATION_MS = 12 * 60 * 60 * 1000;
@@ -478,23 +478,37 @@ app.get('/admin/dictionary', authenticateAdminToken, async (req, res) => {
         res.json(dictionary);
     } catch (error) { res.status(500).json({ error: 'Lỗi khi lấy từ điển.' }); }
 });
+
 app.post('/admin/dictionary', authenticateAdminToken, async (req, res) => {
     if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
     try {
         const { key, value } = req.body;
         if (!key || !value) return res.status(400).json({ error: 'Thiếu key hoặc value.' });
+
+        console.log(`[Debug] Đang thêm từ khóa: { key: "${key}", value: "${value}" }`);
         const docRef = await db.collection('dictionary').add({ key, value });
-        // <<< TỐI ƯU: Xóa lệnh gọi thủ công, onSnapshot sẽ tự cập nhật cache
-        // await loadDictionaryFromFirestore();
+        console.log(`[Debug] Firestore trả về ID document mới: ${docRef.id}`);
+
+        // --- BƯỚC CHẨN ĐOÁN QUAN TRỌNG ---
+        // Thử đọc lại ngay lập tức chính document vừa tạo bằng ID của nó.
+        const newDocSnapshot = await docRef.get();
+        if (newDocSnapshot.exists) {
+            console.log('[Debug] THÀNH CÔNG: Đọc lại document mới thành công.', newDocSnapshot.data());
+        } else {
+            // Nếu code chạy vào đây, đây là lỗi nghiêm trọng.
+            console.error('[Debug] LỖI NGHIÊM TRỌNG: Document KHÔNG TỒN TẠI ngay sau khi tạo!');
+        }
+        // --- KẾT THÚC BƯỚC CHẨN ĐOÁN ---
+
+        await refreshDictionaryCache(); // Vẫn giữ lại việc làm mới cache
+        
         res.status(201).json({ id: docRef.id, key, value });
     } catch (error) { 
-        // --- SỬA LỖI ---
-        // Thêm console.error để ghi lại lỗi chi tiết trên server, giúp dễ dàng chẩn đoán.
         console.error("Lỗi khi thêm từ khóa mới vào Firestore:", error);
         res.status(500).json({ error: 'Lỗi khi thêm từ mới.' }); 
-        // --- KẾT THÚC SỬA LỖI ---
     }
 });
+
 app.put('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => {
     if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
     try {
@@ -502,17 +516,22 @@ app.put('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => {
         const { key, value } = req.body;
         if (!key || !value) return res.status(400).json({ error: 'Thiếu key hoặc value.' });
         await db.collection('dictionary').doc(id).update({ key, value });
-        // <<< TỐI ƯU: Xóa lệnh gọi thủ công, onSnapshot sẽ tự cập nhật cache
-        // await loadDictionaryFromFirestore();
+
+        // <<< Chủ động làm mới cache
+        await refreshDictionaryCache(); 
+
         res.json({ success: true });
     } catch (error) { res.status(500).json({ error: 'Lỗi khi cập nhật từ.' }); }
 });
+
 app.delete('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => {
     if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
     try {
         await db.collection('dictionary').doc(req.params.id).delete();
-        // <<< TỐI ƯU: Xóa lệnh gọi thủ công, onSnapshot sẽ tự cập nhật cache
-        // await loadDictionaryFromFirestore();
+
+        // <<< Chủ động làm mới cache
+        await refreshDictionaryCache(); 
+
         res.json({ success: true });
     } catch (error) { res.status(500).json({ error: 'Lỗi khi xóa từ.' }); }
 });
@@ -520,8 +539,8 @@ app.delete('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => 
 // Khởi động server
 (async () => {
     await initializeFirebaseAdmin();
-    // <<< THAY ĐỔI: Gọi hàm lắng nghe thay đổi để khởi tạo và duy trì cache
-    listenForDictionaryChanges();
+    // <<< Gọi hàm làm mới cache chủ động
+    await refreshDictionaryCache(); 
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`Server Backend Doraemon đang chạy tại cổng ${PORT}`);
         if (!firebaseAdminInitialized) console.warn('CẢNH BÁO: Firestore không khả dụng.');

@@ -39,12 +39,21 @@ app.use(cors({
     ],
     credentials: true,
 }));
-
 app.use(express.json());
 app.use(cookieParser());
 app.set('trust proxy', 1);
 
-// --- SECURITY / CONFIG VARS ---
+// --- HTTP SECURITY HEADERS ---
+app.use((req, res, next) => {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;");
+    next();
+});
+
+// --- CONFIG VARS ---
 const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
 const ADMIN_USERNAME_HASH = process.env.ADMIN_USERNAME_HASH;
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH;
@@ -55,112 +64,161 @@ if (!JWT_SECRET) {
     process.exit(1);
 }
 if (!RECAPTCHA_SECRET_KEY || !ADMIN_USERNAME_HASH || !ADMIN_PASSWORD_HASH) {
-    console.error('Cảnh báo: Thiếu các biến môi trường quan trọng (RECAPTCHA/ADMIN hashes). Một số chức năng có thể bị giới hạn.');
+    console.warn('Cảnh báo: Thiếu một số biến môi trường (RECAPTCHA/ADMIN hashes) — một vài tính năng admin/captcha có thể bị giới hạn.');
 }
 
 const appId = process.env.RENDER_SERVICE_ID || 'default-render-app-id';
 
-// --- FIREBASE INIT (NON-BLOCKING, SAFE) ---
+// --- FIREBASE INIT (NON-BLOCKING, WITH RETRY) ---
 let db = null;
 let firebaseAdminInitialized = false;
 
-function withTimeout(promise, ms) {
-    return Promise.race([
-        promise,
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
-    ]);
-}
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
-async function initializeFirebaseAdmin(timeoutMs = 8000) {
-    console.log('Firebase Init: Bắt đầu khởi tạo Firebase Admin SDK (non-blocking)...');
+async function tryInitializeFirebaseOnce() {
     if (admin.apps.length > 0) {
         try {
             db = getFirestore();
             firebaseAdminInitialized = true;
-            console.log('Firebase Init: Firebase Admin SDK đã được khởi tạo trước đó.');
-            return;
+            console.log('[Firebase] already initialized (reused).');
+            return true;
         } catch (e) {
-            console.error('Firebase Init reuse error:', e);
-            // continue to attempt re-init
+            console.error('[Firebase] reuse error:', e);
+            // fall through to try re-init
         }
     }
 
     const serviceAccountKeyString = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
     if (!serviceAccountKeyString) {
-        console.warn('Firebase Init: FIREBASE_SERVICE_ACCOUNT_KEY chưa được đặt. Firestore sẽ không hoạt động.');
-        db = null;
+        console.warn('[Firebase] FIREBASE_SERVICE_ACCOUNT_KEY chưa được đặt. Firestore sẽ không hoạt động.');
         firebaseAdminInitialized = false;
-        return;
+        db = null;
+        return false;
     }
 
     try {
-        await withTimeout((async () => {
-            const serviceAccount = JSON.parse(serviceAccountKeyString);
+        let serviceAccount;
+        try {
+            serviceAccount = JSON.parse(serviceAccountKeyString);
+        } catch (parseErr) {
+            console.error('[Firebase] FIREBASE_SERVICE_ACCOUNT_KEY JSON.parse error:', parseErr);
+            firebaseAdminInitialized = false;
+            db = null;
+            return false;
+        }
+
+        try {
             admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
             db = getFirestore();
             firebaseAdminInitialized = true;
-        })(), timeoutMs);
-        console.log('Firebase Init: Firebase Admin SDK đã được khởi tạo và kết nối với Firestore.');
-    } catch (error) {
-        console.error('Firebase Init: Lỗi khi khởi tạo Firebase Admin SDK hoặc timeout:', error);
-        db = null;
+            console.log('[Firebase] initialized and ready.');
+            return true;
+        } catch (initErr) {
+            console.error('[Firebase] initializeApp error:', initErr);
+            firebaseAdminInitialized = false;
+            db = null;
+            return false;
+        }
+    } catch (err) {
+        console.error('[Firebase] unexpected error during init:', err);
         firebaseAdminInitialized = false;
+        db = null;
+        return false;
     }
 }
 
-// --- DICTIONARY CACHE (PRECOMPILED) ---
-let sortedDoraemonEntries = []; // array of { id, key, value, regex }
+// Keep trying to initialize Firebase in background with backoff (non-blocking to server start)
+async function initializeFirebaseWithRetries(maxAttempts = 6, baseDelay = 1000) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            const ok = await tryInitializeFirebaseOnce();
+            if (ok) return true;
+        } catch (e) {
+            console.error('[Firebase] attempt error:', e);
+        }
+        const delay = Math.min(baseDelay * Math.pow(2, attempt - 1), 10000);
+        console.log(`[Firebase] Khởi tạo thất bại hoặc chưa sẵn sàng, sẽ thử lại sau ${delay}ms (attempt ${attempt}/${maxAttempts})`);
+        await sleep(delay);
+    }
+    console.warn('[Firebase] Không thể khởi tạo Firebase sau nhiều lần thử. Tiếp tục chạy server nhưng Firestore sẽ không sẵn sàng.');
+    return false;
+}
+
+// --- DICTIONARY CACHE (PRECOMPILED REGEX) ---
+let sortedDoraemonEntries = []; // { id, key, value, regex }
 
 function escapeRegExpString(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Build a Unicode-aware boundary regex around the escaped key.
-// Uses lookbehind/lookahead to ensure boundaries are not letters/digits.
 function buildRegexForKey(key) {
-    // Use Unicode property escapes and lookbehind/lookahead (Node 12+/modern VMs)
     const escaped = escapeRegExpString(key);
-    // (?<![\p{L}\p{N}])KEY(?![\p{L}\p{N}]) with flags giu
+    // Use Unicode property escapes with lookbehind/lookahead
+    // Ensure Node version supports this (Node 22 does)
     return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu');
 }
 
-function listenForDictionaryChanges() {
+// Listener: do initial one-shot get(), then register onSnapshot WITHOUT select()
+async function listenForDictionaryChanges() {
     if (!db) {
         console.warn('[Cache] Firestore chưa sẵn sàng, không thể khởi tạo cache từ điển.');
         return;
     }
 
-    console.log('[Cache] Bắt đầu lắng nghe thay đổi từ điển từ Firestore (onSnapshot)...');
-
-    // Select only needed fields to reduce data load
-    db.collection('dictionary').select('key', 'value').onSnapshot(snapshot => {
-        console.log(`[Cache] onSnapshot được gọi. snapshot.size = ${snapshot.size}`);
-
-        const dictionaryEntries = [];
-        snapshot.forEach(doc => {
+    console.log('[Cache] Bắt đầu tải từ điển (initial .get()) ...');
+    try {
+        const oneShot = await db.collection('dictionary').get();
+        const initialEntries = [];
+        oneShot.forEach(doc => {
             const data = doc.data() || {};
             if (data.key && data.value) {
                 try {
                     const keyStr = String(data.key);
                     const valueStr = String(data.value);
                     const regex = buildRegexForKey(keyStr);
-                    dictionaryEntries.push({ id: doc.id, key: keyStr, value: valueStr, regex });
+                    initialEntries.push({ id: doc.id, key: keyStr, value: valueStr, regex });
                 } catch (e) {
-                    console.warn(`[Cache] Bỏ qua doc ${doc.id} do lỗi tạo regex cho key:`, data.key, e && e.message);
+                    console.warn(`[Cache] Bỏ qua doc ${doc.id} do lỗi tạo regex:`, e && e.message);
                 }
-            } else {
-                console.warn(`[Cache] Bỏ qua doc ${doc.id} do thiếu key hoặc value`, data);
             }
         });
+        initialEntries.sort((a, b) => b.key.length - a.key.length);
+        sortedDoraemonEntries = initialEntries;
+        console.log(`[Cache] Initial load hoàn tất. items=${sortedDoraemonEntries.length}`);
+    } catch (err) {
+        console.warn('[Cache] Lỗi khi load initial dictionary (.get()):', err);
+    }
 
-        // Sort by key length desc to prioritize longer matches
-        dictionaryEntries.sort((a, b) => b.key.length - a.key.length);
-
-        sortedDoraemonEntries = dictionaryEntries;
-        console.log(`[Cache] Cache từ điển đã được cập nhật. Tổng số mục: ${sortedDoraemonEntries.length}`);
-    }, error => {
-        console.error('[Cache] Lỗi khi lắng nghe thay đổi từ điển:', error);
-    });
+    console.log('[Cache] Đăng ký onSnapshot để nghe thay đổi (không dùng .select()) ...');
+    try {
+        db.collection('dictionary').onSnapshot(snapshot => {
+            console.log(`[Cache] onSnapshot được gọi. snapshot.size = ${snapshot.size}`);
+            const entries = [];
+            snapshot.forEach(doc => {
+                const data = doc.data() || {};
+                if (data.key && data.value) {
+                    try {
+                        const keyStr = String(data.key);
+                        const valueStr = String(data.value);
+                        const regex = buildRegexForKey(keyStr);
+                        entries.push({ id: doc.id, key: keyStr, value: valueStr, regex });
+                    } catch (e) {
+                        console.warn(`[Cache] Bỏ qua doc ${doc.id} do lỗi tạo regex:`, e && e.message);
+                    }
+                } else {
+                    console.warn(`[Cache] Bỏ qua doc ${doc.id} do thiếu key hoặc value`);
+                }
+            });
+            entries.sort((a, b) => b.key.length - a.key.length);
+            sortedDoraemonEntries = entries;
+            console.log(`[Cache] Cache từ điển đã được cập nhật. Tổng số mục: ${sortedDoraemonEntries.length}`);
+        }, error => {
+            console.error('[Cache] Lỗi khi lắng nghe thay đổi từ điển (onSnapshot):', error);
+            // We keep running; onSnapshot errors are logged. Could implement retry/backoff here if desired.
+        });
+    } catch (err) {
+        console.error('[Cache] Không thể đăng ký onSnapshot:', err);
+    }
 }
 
 // --- ADMIN DATA HELPERS ---
@@ -180,16 +238,13 @@ async function getAdminData() {
     if (!docRef) return {};
     try {
         const docSnap = await docRef.get();
-        if (docSnap.exists) {
-            return docSnap.data();
-        } else {
-            const initialData = {
-                banned_ips: {}, banned_fingerprints: {}, total_requests: 0,
-                total_failed_recaptcha: 0, failedAttempts: {}, tfa_secret: null,
-            };
-            await docRef.set(initialData);
-            return initialData;
-        }
+        if (docSnap.exists) return docSnap.data();
+        const initialData = {
+            banned_ips: {}, banned_fingerprints: {}, total_requests: 0,
+            total_failed_recaptcha: 0, failedAttempts: {}, tfa_secret: null,
+        };
+        await docRef.set(initialData);
+        return initialData;
     } catch (error) {
         console.error('Lỗi khi lấy admin data từ Firestore:', error);
         return {};
@@ -205,7 +260,6 @@ async function updateAdminData(dataToUpdate) {
 function getClientIp(req) { return (req.headers['x-forwarded-for'] || req.ip).split(',')[0].trim(); }
 function normalizeIp(ip) { return ip && ip.startsWith('::ffff:') ? ip.substring(7) : ip; }
 
-// sanitizeInput keeps Unicode letters and digits (for Vietnamese)
 function sanitizeInput(input) {
     if (typeof input !== 'string') return '';
     let sanitized = input.trim().toLowerCase().substring(0, 200);
@@ -218,10 +272,7 @@ async function securityMiddleware(req, res, next) {
     const ip = normalizeIp(clientIpRaw);
     const visitorId = req.body.visitorId;
 
-    if (!db) {
-        // allow requests to proceed if Firestore not ready (some admin routes may need db - they will respond with 503)
-        return next();
-    }
+    if (!db) return next();
 
     try {
         const adminData = await getAdminData();
@@ -234,7 +285,6 @@ async function securityMiddleware(req, res, next) {
                 const banMessage = banExpiresAt === PERMANENT_BAN_VALUE ? 'vĩnh viễn' : `tạm thời. Vui lòng thử lại sau: ${new Date(banExpiresAt).toLocaleString('vi-VN')}`;
                 return res.status(403).json({ error: `Truy cập của bạn đã bị chặn ${banMessage}.` });
             } else {
-                // expired auto-unban
                 delete currentBannedFingerprints[visitorId];
                 await updateAdminData({ banned_fingerprints: currentBannedFingerprints });
             }
@@ -270,21 +320,16 @@ function authenticateAdminToken(req, res, next) {
 }
 
 // --- ENDPOINTS ---
-// basic
 app.get('/', (req, res) => res.status(200).send('Backend Doraemon đang chạy.'));
 
-// health
 app.get('/health', (req, res) => {
     res.status(200).json({ healthy: true, firebaseReady: !!firebaseAdminInitialized, dictionaryCount: sortedDoraemonEntries.length });
 });
 
-// giai-ma (main endpoint)
 app.post('/giai-ma', securityMiddleware, async (req, res) => {
-    // ensure dictionary ready
     if (!sortedDoraemonEntries || sortedDoraemonEntries.length === 0) {
         return res.status(503).json({ error: 'Từ điển chưa sẵn sàng, vui lòng thử lại sau.' });
     }
-
     const { userInput, recaptchaToken } = req.body;
     const clientIpRaw = getClientIp(req);
     const ip = normalizeIp(clientIpRaw);
@@ -292,7 +337,6 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
     if (!userInput || !recaptchaToken) return res.status(400).json({ error: 'Thiếu dữ liệu.' });
 
     try {
-        // verify recaptcha
         const recaptchaUrl = `https://www.google.com/recaptcha/api/siteverify`;
         const params = new URLSearchParams({ secret: RECAPTCHA_SECRET_KEY || '', response: recaptchaToken, remoteip: ip });
         const verificationResponse = await fetch(recaptchaUrl, { method: 'POST', body: params });
@@ -302,7 +346,6 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
         if (!recaptchaData.success) {
             await updateAdminData({ total_failed_recaptcha: FieldValue.increment(1) });
 
-            // track failed attempts and auto-ban if necessary
             const adminData = await getAdminData();
             const failedAttempts = adminData.failedAttempts || {};
             const bannedIps = adminData.banned_ips || {};
@@ -317,7 +360,7 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
                 delete failedAttempts[ip]['false recaptcha'];
                 if (Object.keys(failedAttempts[ip]).length === 0) delete failedAttempts[ip];
                 await updateAdminData({ banned_ips: bannedIps, failedAttempts });
-                console.log(`[AUTO-BAN] IP ${ip} đã bị cấm ${BAN_DURATION_MS / 3600000} giờ do reCAPTCHA thất bại quá nhiều lần.`);
+                console.log(`[AUTO-BAN] IP ${ip} đã bị cấm 12 giờ do reCAPTCHA thất bại quá nhiều lần.`);
             } else {
                 await updateAdminData({ failedAttempts });
             }
@@ -325,13 +368,11 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
             return res.status(401).json({ error: 'Xác thực reCAPTCHA thất bại.' });
         }
 
-        // passed recaptcha
         await updateAdminData({ total_requests: FieldValue.increment(1) });
 
         let text = sanitizeInput(userInput);
         let replaced = false;
 
-        // Use precompiled regex list (sorted by length)
         for (const entry of sortedDoraemonEntries) {
             try {
                 const newText = text.replace(entry.regex, () => entry.value);
@@ -340,7 +381,6 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
                     replaced = true;
                 }
             } catch (err) {
-                // If regex misbehaves, skip it but log
                 console.warn('[giai-ma] skip regex for entry', entry.id, err && err.message);
             }
         }
@@ -352,7 +392,7 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
     }
 });
 
-// --- ADMIN APIs --- (kept behavior similar to original)
+// --- ADMIN APIs ---
 app.post('/admin/login', async (req, res) => {
     const { username, password } = req.body;
     const ip = normalizeIp(getClientIp(req));
@@ -532,7 +572,6 @@ app.post('/admin/dictionary', authenticateAdminToken, async (req, res) => {
         const { key, value } = req.body;
         if (!key || !value) return res.status(400).json({ error: 'Thiếu key hoặc value.' });
         const docRef = await db.collection('dictionary').add({ key, value });
-        // onSnapshot sẽ tự cập nhật cache
         res.status(201).json({ id: docRef.id, key, value });
     } catch (error) { res.status(500).json({ error: 'Lỗi khi thêm từ mới.' }); }
 });
@@ -544,7 +583,6 @@ app.put('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => {
         const { key, value } = req.body;
         if (!key || !value) return res.status(400).json({ error: 'Thiếu key hoặc value.' });
         await db.collection('dictionary').doc(id).update({ key, value });
-        // onSnapshot sẽ tự cập nhật cache
         res.json({ success: true });
     } catch (error) { res.status(500).json({ error: 'Lỗi khi cập nhật từ.' }); }
 });
@@ -553,34 +591,27 @@ app.delete('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => 
     if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
     try {
         await db.collection('dictionary').doc(req.params.id).delete();
-        // onSnapshot sẽ tự cập nhật cache
         res.json({ success: true });
     } catch (error) { res.status(500).json({ error: 'Lỗi khi xóa từ.' }); }
 });
 
-// --- BOOTSTRAP: start server immediately and init firebase in background ---
+// --- BOOTSTRAP ---
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server Backend Doraemon đang chạy tại cổng ${PORT}`);
     if (!firebaseAdminInitialized) console.warn('CẢNH BÁO: Firestore chưa được khởi tạo (đang chờ).');
 });
 
-// initialize firebase in background and start listener if ready
-initializeFirebaseAdmin()
-  .then(() => {
-    if (firebaseAdminInitialized) {
-      // start listening dictionary changes
-      try {
-        listenForDictionaryChanges();
-      } catch (err) {
-        console.error('Lỗi khi bật listener từ điển:', err);
-      }
-    } else {
-      console.warn('Firebase không khởi tạo được trong lần thử đầu. Bạn có thể kiểm tra env FIREBASE_SERVICE_ACCOUNT_KEY.');
+// initialize firebase in background with retries; when ready, start dictionary listener
+(async () => {
+    const ok = await initializeFirebaseWithRetries();
+    if (ok && firebaseAdminInitialized) {
+        try {
+            await listenForDictionaryChanges();
+        } catch (err) {
+            console.error('Lỗi khi bật listener từ điển:', err);
+        }
     }
-  })
-  .catch(err => {
-    console.error('initializeFirebaseAdmin() rejected:', err);
-  });
+})();
 
 // --- Global handlers to avoid process exit on unexpected errors ---
 process.on('uncaughtException', err => { console.error('UNCAUGHT EXCEPTION:', err && err.stack ? err.stack : err); });

@@ -100,7 +100,13 @@ const appId = process.env.RENDER_SERVICE_ID || 'default-render-app-id';
 
 // --- <<< BẮT ĐẦU PHẦN CACHE MỚI ---
 // BIẾN CACHE TỪ ĐIỂN
+// Lưu mảng các entry dưới dạng { id, key, value }
 let sortedDoraemonEntries = [];
+
+// HÀM HỖ TRỢ
+function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 // HÀM LẮNG NGHE THAY ĐỔI TỪ ĐIỂN VÀ CẬP NHẬT CACHE
 function listenForDictionaryChanges() {
@@ -112,18 +118,26 @@ function listenForDictionaryChanges() {
     console.log('[Cache] Bắt đầu lắng nghe thay đổi từ điển từ Firestore...');
     
     db.collection('dictionary').onSnapshot(snapshot => {
-        const dictionary = {};
+        // Log kích thước snapshot để biết onSnapshot có được gọi không
+        console.log(`[Cache] onSnapshot được gọi. snapshot.size = ${snapshot.size}`);
+
+        const entries = [];
         snapshot.forEach(doc => {
-            const data = doc.data();
+            const data = doc.data() || {};
             if (data.key && data.value) {
-                dictionary[data.key] = data.value;
+                entries.push({ id: doc.id, key: String(data.key), value: String(data.value) });
+            } else {
+                console.warn(`[Cache] Bỏ qua doc ${doc.id} do thiếu key hoặc value`, data);
             }
         });
-        
-        // Sắp xếp các mục từ điển theo độ dài của key (từ dài đến ngắn) để ưu tiên khớp các cụm từ dài hơn
-        sortedDoraemonEntries = Object.entries(dictionary).sort((a, b) => b[0].length - a[0].length);
-        
-        console.log(`[Cache] Cache từ điển đã được cập nhật. Tổng số từ khóa: ${sortedDoraemonEntries.length}`);
+
+        // Sắp xếp theo độ dài của key (từ dài -> ngắn)
+        entries.sort((a, b) => b.key.length - a.key.length);
+
+        // Gán vào cache
+        sortedDoraemonEntries = entries;
+
+        console.log(`[Cache] Cache từ điển đã được cập nhật. Tổng số mục (docs với key/value): ${sortedDoraemonEntries.length}`);
     }, error => {
         console.error('[Cache] Lỗi khi lắng nghe thay đổi từ điển:', error);
     });
@@ -168,10 +182,13 @@ async function updateAdminData(dataToUpdate) {
 }
 function getClientIp(req) { return (req.headers['x-forwarded-for'] || req.ip).split(',')[0].trim(); }
 function normalizeIp(ip) { return ip && ip.startsWith('::ffff:') ? ip.substring(7) : ip; }
+
+// sanitizeInput: giữ Unicode (tiếng Việt), loại bỏ ký tự lạ, giới hạn độ dài
 function sanitizeInput(input) {
     if (typeof input !== 'string') return '';
     let sanitized = input.trim().toLowerCase().substring(0, 200);
-    return sanitized.replace(/[^a-z0-9àáạảãăắằặẳẵâấầậẩẫèéẹẻẽêếềệểễìíịỉĩòóọỏõôốồộổỗơớờợởỡùúụủũưứừựửữđ\s.,!?-]/g, '');
+    // Cho phép ký tự chữ (Unicode), số, khoảng trắng và một vài dấu câu cơ bản
+    return sanitized.replace(/[^\p{L}\p{N}\s\-,.?!]/gu, '');
 }
 
 async function securityMiddleware(req, res, next) {
@@ -291,11 +308,21 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
 
         let text = sanitizeInput(userInput);
         let replaced = false;
-        for (const [k, v] of sortedDoraemonEntries) {
-            // <<< SỬA LỖI: Thêm \b để chỉ khớp với từ hoàn chỉnh
-            const re = new RegExp('\\b' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'gi');
+
+        for (const entry of sortedDoraemonEntries) {
+            const k = entry.key;
+            const v = entry.value;
+
+            // escape key for regex
+            const escaped = escapeRegExp(k);
+
+            // Sử dụng Unicode-aware boundary: đảm bảo không khớp trong chuỗi ký tự chữ/số khác
+            // (?![...]) và (?<![...]) dùng với flag 'u'
+            const re = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu');
+
             if (re.test(text)) {
-                text = text.replace(re, v);
+                // dùng callback để tránh việc $ trong v gây ảnh hưởng
+                text = text.replace(re, () => v);
                 replaced = true;
             }
         }
@@ -484,8 +511,7 @@ app.post('/admin/dictionary', authenticateAdminToken, async (req, res) => {
         const { key, value } = req.body;
         if (!key || !value) return res.status(400).json({ error: 'Thiếu key hoặc value.' });
         const docRef = await db.collection('dictionary').add({ key, value });
-        // <<< TỐI ƯU: Xóa lệnh gọi thủ công, onSnapshot sẽ tự cập nhật cache
-        // await loadDictionaryFromFirestore();
+        // onSnapshot sẽ tự cập nhật cache
         res.status(201).json({ id: docRef.id, key, value });
     } catch (error) { res.status(500).json({ error: 'Lỗi khi thêm từ mới.' }); }
 });
@@ -496,8 +522,7 @@ app.put('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => {
         const { key, value } = req.body;
         if (!key || !value) return res.status(400).json({ error: 'Thiếu key hoặc value.' });
         await db.collection('dictionary').doc(id).update({ key, value });
-        // <<< TỐI ƯU: Xóa lệnh gọi thủ công, onSnapshot sẽ tự cập nhật cache
-        // await loadDictionaryFromFirestore();
+        // onSnapshot sẽ tự cập nhật cache
         res.json({ success: true });
     } catch (error) { res.status(500).json({ error: 'Lỗi khi cập nhật từ.' }); }
 });
@@ -505,8 +530,7 @@ app.delete('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => 
     if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
     try {
         await db.collection('dictionary').doc(req.params.id).delete();
-        // <<< TỐI ƯU: Xóa lệnh gọi thủ công, onSnapshot sẽ tự cập nhật cache
-        // await loadDictionaryFromFirestore();
+        // onSnapshot sẽ tự cập nhật cache
         res.json({ success: true });
     } catch (error) { res.status(500).json({ error: 'Lỗi khi xóa từ.' }); }
 });
@@ -514,7 +538,7 @@ app.delete('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => 
 // Khởi động server
 (async () => {
     await initializeFirebaseAdmin();
-    // <<< THAY ĐỔI: Gọi hàm lắng nghe thay đổi để khởi tạo và duy trì cache
+    // Gọi hàm lắng nghe thay đổi để khởi tạo và duy trì cache
     listenForDictionaryChanges();
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`Server Backend Doraemon đang chạy tại cổng ${PORT}`);

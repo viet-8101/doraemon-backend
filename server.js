@@ -1,13 +1,4 @@
 // server.js
-// Full-featured, stable server:
-// - starts immediately (no blocking init)
-// - Firebase init with retries/backoff
-// - dictionary cache: initial .get() + onSnapshot (no .select())
-// - precompiled regex (safe fallback)
-// - robust reCAPTCHA verify (timeout + retry + logging)
-// - admin APIs: login, 2FA verify, dashboard, dictionary CRUD
-// - admin migration endpoint to normalize dictionary docs
-
 import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
@@ -690,3 +681,4 @@ app.listen(PORT, '0.0.0.0', () => {
     console.warn('[Bootstrap] Firebase không sẵn sàng — bạn có thể kiểm tra FIREBASE_SERVICE_ACCOUNT_KEY trong env.');
   }
 })();
+

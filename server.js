@@ -338,7 +338,9 @@ async function verifyRecaptcha(recaptchaToken, remoteIp, attempts = 2, timeoutMs
         return { ok: false, error: 'http-error', status: resp.status, body: text };
       }
       const data = await resp.json();
-      console.log('[reCAPTCHA] verify result', { success: data.success, score: data.score, action: data.action, hostname: data.hostname, errors: data['error-codes'] });
+      // Changed: replace detailed debug object with only IP + success/failure
+      const ipLog = remoteIp || '<no-ip>';
+      console.log(`${ipLog} - reCAPTCHA ${data && data.success ? 'success' : 'failure'}`);
       return { ok: !!data.success, data };
     } catch (err) {
       clearTimeout(timer);
@@ -681,4 +683,3 @@ app.listen(PORT, '0.0.0.0', () => {
     console.warn('[Bootstrap] Firebase không sẵn sàng — bạn có thể kiểm tra FIREBASE_SERVICE_ACCOUNT_KEY trong env.');
   }
 })();
-

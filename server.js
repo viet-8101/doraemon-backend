@@ -57,6 +57,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const DICTIONARY_MAX_LENGTH = 500; 
 const RECAPTCHA_SCORE_THRESHOLD = 0.75; 
 const RECAPTCHA_EXPECTED_ACTION = 'giai_ma'; 
+const RECAPTCHA_FAIL_THRESHOLD = 10; // Ngưỡng thất bại reCAPTCHA liên tiếp
 
 if (!JWT_SECRET) {
   console.error('Lỗi: JWT_SECRET chưa được đặt trong biến môi trường! Server sẽ không khởi động.');
@@ -157,6 +158,8 @@ function buildRegexForKeySafe(key) {
 
   const escaped = escapeRegExpString(keyStr);
   try {
+    // Sử dụng boundary word: (?<![\p{L}\p{N}])${escaped}(?![\p{L}\p{N}])
+    // Đảm bảo chỉ match toàn bộ từ
     return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu');
   } catch (e) {
     console.warn('[Regex] lookbehind/unicode failed for key, falling back to simple match:', keyStr.slice(0, 60));
@@ -233,9 +236,7 @@ async function listenForDictionaryChanges() {
 const BAN_DURATION_MS = 12 * 60 * 60 * 1000;
 const LOGIN_BAN_DURATION_MS = 60 * 60 * 1000;
 const PERMANENT_BAN_VALUE = Number.MAX_SAFE_INTEGER;
-const FAILED_ATTEMPTS_THRESHOLD = 5;
 const LOGIN_ATTEMPTS_THRESHOLD = 10;
-const RECAPTCHA_FAIL_THRESHOLD = 10; // Ngưỡng thất bại reCAPTCHA liên tiếp
 
 const getAdminDataDocRef = () => {
   if (!db) return null;
@@ -297,6 +298,7 @@ async function securityMiddleware(req, res, next) {
         const banMessage = banExpiresAt === PERMANENT_BAN_VALUE ? 'vĩnh viễn' : `tạm thời. Vui lòng thử lại sau: ${new Date(banExpiresAt).toLocaleString('vi-VN')}`;
         return res.status(403).json({ error: `Truy cập của bạn đã bị chặn ${banMessage}.` });
       } else {
+        // Gỡ ban hết hạn
         delete currentBannedFingerprints[visitorId];
         await updateAdminData({ banned_fingerprints: currentBannedFingerprints });
       }
@@ -308,6 +310,7 @@ async function securityMiddleware(req, res, next) {
         const banMessage = banExpiresAt === PERMANENT_BAN_VALUE ? 'vĩnh viễn' : `tạm thời. Vui lòng thử lại sau: ${new Date(banExpiresAt).toLocaleString('vi-VN')}`;
         return res.status(403).json({ error: `IP của bạn đang bị chặn ${banMessage}.` });
       } else {
+        // Gỡ ban hết hạn
         delete currentBannedIps[ip];
         await updateAdminData({ banned_ips: currentBannedIps });
       }
@@ -407,7 +410,7 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
       // Xóa bộ đếm thất bại sau khi cấm
       delete failedAttempts[ip].recaptcha_fail_count;
       
-      // FIX 1A: Xóa IP entry nếu không còn thuộc tính nào (ví dụ: chỉ còn lock-out login)
+      // Xóa IP entry nếu không còn thuộc tính nào (ví dụ: chỉ còn lock-out login)
       if (Object.keys(failedAttempts[ip]).length === 0) {
         delete failedAttempts[ip];
       }
@@ -444,7 +447,7 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
     const failedAttempts = adminData.failedAttempts || {};
     if (failedAttempts[ip]?.recaptcha_fail_count) {
       delete failedAttempts[ip].recaptcha_fail_count;
-      // FIX 1B: Xóa IP entry nếu không còn thuộc tính nào
+      // Xóa IP entry nếu không còn thuộc tính nào
       if (Object.keys(failedAttempts[ip]).length === 0) {
         delete failedAttempts[ip];
       }
@@ -499,7 +502,7 @@ app.post('/admin/login', async (req, res) => {
       // Clear login failed counter on success
       if (failedAttempts[ip]?.login) {
         delete failedAttempts[ip].login;
-        // FIX 1C: Xóa IP entry nếu không còn thuộc tính nào
+        // Xóa IP entry nếu không còn thuộc tính nào
         if (Object.keys(failedAttempts[ip]).length === 0) {
             delete failedAttempts[ip];
         }
@@ -545,7 +548,9 @@ app.post('/admin/login', async (req, res) => {
 
 app.post('/admin/verify-tfa', async (req, res) => {
   const { code, tfaToken } = req.body;
-  if (!code || !tfaToken) return res.status(400).json({ error: 'Thiếu mã xác thực hoặc token.' });
+  // Sử dụng tfaCode thay vì code nếu client gửi tfaCode (giữ code để đảm bảo tương thích)
+  const tfaCode = code || req.body.tfaCode; 
+  if (!tfaCode || !tfaToken) return res.status(400).json({ error: 'Thiếu mã xác thực hoặc token.' });
 
   jwt.verify(tfaToken, JWT_SECRET, async (err, user) => {
     if (err) return res.status(403).json({ error: 'Phiên xác thực 2FA đã hết hạn.' });
@@ -559,7 +564,7 @@ app.post('/admin/verify-tfa', async (req, res) => {
       const verified = speakeasy.totp.verify({
         secret: tfaSecret,
         encoding: 'base32',
-        token: code,
+        token: tfaCode,
         window: 1,
       });
 
@@ -568,7 +573,8 @@ app.post('/admin/verify-tfa', async (req, res) => {
         res.cookie('adminToken', token, {
           httpOnly: true,
           secure: true,
-          sameSite: 'Lax',
+          // Sử dụng SameSite=Lax nếu app được host cùng tên miền hoặc SameSite=None nếu khác tên miền (yêu cầu Secure=true)
+          sameSite: 'Lax', 
           maxAge: 12 * 60 * 60 * 1000,
         }).json({ success: true, message: 'Đăng nhập thành công.' });
       } else {
@@ -586,11 +592,12 @@ app.get('/admin/verify-session', authenticateAdminToken, (req, res) => {
 });
 
 app.post('/admin/logout', (req, res) => {
-  res.clearCookie('adminToken', { httpOnly: true, secure: true, sameSite: 'Lax' })
+  // Đảm bảo các tham số cookie khớp với lúc set
+  res.clearCookie('adminToken', { httpOnly: true, secure: true, sameSite: 'Lax' }) 
      .json({ success: true, message: 'Đã đăng xuất.' });
 });
 
-// FIX 3: Cập nhật hàm này để trả về 4 Object dữ liệu cấm (tương thích App.jsx)
+// Cập nhật để trả về 4 Object dữ liệu cấm (tương thích Dashboard)
 app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
   try {
@@ -602,7 +609,8 @@ app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => {
       let activeBans = {};
       let expiredCount = 0;
       for (const [key, expiresAt] of Object.entries(bans || {})) {
-        if (expiresAt === PERMANENT_BAN_VALUE || now < expiresAt) {
+        // PERMANENT_BAN_VALUE hoặc chưa hết hạn
+        if (expiresAt === PERMANENT_BAN_VALUE || now < expiresAt) { 
           activeBans[key] = expiresAt;
         } else {
           expiredCount++;
@@ -619,7 +627,7 @@ app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => {
       updateAdminData({ banned_ips: activeIps, banned_fingerprints: activeFp }).catch(e => {});
     }
 
-    // --- LOGIC TÁCH DỮ LIỆU CẤM SANG 4 OBJECT THEO YÊU CẦU CỦA CLIENT ---
+    // LOGIC TÁCH DỮ LIỆU CẤM SANG 4 OBJECT THEO YÊU CẦU CỦA CLIENT
     const permanent_banned_ips = {};
     const temporary_banned_ips = {};
     const permanent_banned_fingerprints = {};
@@ -640,16 +648,13 @@ app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => {
             temporary_banned_fingerprints[fp] = expiry;
         }
     }
-    // ----------------------------------------------------------------------
 
     res.json({
       success: true,
-      // Đóng gói thống kê vào object 'stats'
       stats: {
         total_requests: adminData.total_requests || 0,
         total_failed_recaptcha: adminData.total_failed_recaptcha || 0,
       },
-      // TRẢ VỀ THEO ĐỊNH DẠNG App.jsx (client) CẦN
       permanent_banned_ips,
       temporary_banned_ips,
       permanent_banned_fingerprints,
@@ -661,41 +666,69 @@ app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => {
   }
 });
 
+// ĐÃ FIX: Sử dụng type.toLowerCase()
 app.post('/admin/ban', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
-  // Lưu ý: Client App.jsx chỉ gửi duration: 'permanent' cho ban thủ công
-  const { type, value, duration } = req.body; // type: 'IP' or 'fingerprint', value: ip/fp, duration: 'permanent' or 'temporary'
-  if (!type || !value || !duration) return res.status(400).json({ error: 'Thiếu thông tin.' });
+  const { type, value, duration } = req.body;
+  if (!type || !value) return res.status(400).json({ error: 'Thiếu thông tin.' });
 
   try {
     const expiresAt = duration === 'permanent' ? PERMANENT_BAN_VALUE : Date.now() + BAN_DURATION_MS;
-    const updateKey = type === 'IP' ? 'banned_ips' : 'banned_fingerprints';
-    const adminData = await getAdminData();
-    const currentBans = adminData[updateKey] || {};
-    currentBans[value] = expiresAt; // Đổi 'id' thành 'value' để khớp với request body từ client
     
-    await updateAdminData({ [updateKey]: currentBans });
-    res.json({ success: true, message: `${type} ${value} đã bị cấm thành công.` });
+    // Đảm bảo type là chữ thường để so sánh (khắc phục lỗi case-sensitivity)
+    const lowerCaseType = type.toLowerCase(); 
+
+    const adminData = await getAdminData();
+    let updated = false;
+
+    if (lowerCaseType === 'ip') {
+      (adminData.banned_ips = adminData.banned_ips || {})[value] = expiresAt;
+      updated = true;
+    } else if (lowerCaseType === 'fingerprint') {
+      (adminData.banned_fingerprints = adminData.banned_fingerprints || {})[value] = expiresAt;
+      updated = true;
+    } else {
+      return res.status(400).json({ error: 'Loại ban không hợp lệ.' });
+    }
+
+    if (updated) {
+        await updateAdminData({ banned_ips: adminData.banned_ips, banned_fingerprints: adminData.banned_fingerprints });
+        res.json({ success: true, message: `${type} ${value} đã bị cấm thành công.` });
+    } else {
+        res.status(500).json({ error: 'Lỗi logic khi ban.' });
+    }
   } catch (error) {
     console.error('Lỗi khi cấm:', error && error.message ? error.message : error);
     res.status(500).json({ error: 'Lỗi server khi cấm.' });
   }
 });
 
+// ĐÃ FIX: Sử dụng type.toLowerCase()
 app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
-  const { type, value } = req.body; // Client App.jsx dùng 'value' thay vì 'id'
+  const { type, value } = req.body;
   if (!type || !value) return res.status(400).json({ error: 'Thiếu thông tin.' });
 
   try {
-    const updateKey = type === 'IP' ? 'banned_ips' : 'banned_fingerprints';
     const adminData = await getAdminData();
-    const currentBans = adminData[updateKey] || {};
-    if (currentBans[value]) {
-      delete currentBans[value];
-      await updateAdminData({ [updateKey]: currentBans });
+    let unbanned = false;
+    
+    // Đảm bảo type là chữ thường để so sánh (KHẮC PHỤC LỖI BẠN BÁO CÁO)
+    const lowerCaseType = type.toLowerCase(); 
+
+    if (lowerCaseType === 'ip' && adminData.banned_ips?.[value]) {
+      delete adminData.banned_ips[value];
+      unbanned = true;
+    } else if (lowerCaseType === 'fingerprint' && adminData.banned_fingerprints?.[value]) {
+      delete adminData.banned_fingerprints[value];
+      unbanned = true;
+    }
+
+    if (unbanned) {
+      await updateAdminData({ banned_ips: adminData.banned_ips, banned_fingerprints: adminData.banned_fingerprints });
       res.json({ success: true, message: `${type} ${value} đã được gỡ cấm thành công.` });
     } else {
+      // Sửa lỗi: Trả về lỗi nếu không tìm thấy, nguyên nhân chính là type không khớp
       res.status(404).json({ error: `${type} ${value} không nằm trong danh sách cấm.` });
     }
   } catch (error) {
@@ -705,15 +738,14 @@ app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
 });
 
 // --- DICTIONARY ADMIN APIs ---
+// ĐÃ FIX: Đảm bảo trả về mảng hợp lệ (Fix 2)
 app.get('/admin/dictionary', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
   try {
     const snapshot = await db.collection('dictionary').get();
     
-    // FIX 2: Đảm bảo dữ liệu là mảng hợp lệ để tránh lỗi client-side .map is not a function
     const dictionary = snapshot.docs
       .map(doc => ({ id: doc.id, ...doc.data() }))
-      // Thêm 1 lớp kiểm tra phòng thủ: nếu có document nào bị lỗi nặng, chỉ giữ lại object
       .filter(item => typeof item === 'object' && item !== null); 
 
     res.json({ success: true, dictionary: dictionary || [] });
@@ -784,6 +816,7 @@ app.post('/admin/migrate-dictionary', authenticateAdminToken, async (req, res) =
       const hasValue = typeof data.value === 'string' && data.value.trim().length > 0;
 
       if (!hasKey || !hasValue) {
+        // Xóa các mục rỗng hoặc thiếu dữ liệu
         await db.collection('dictionary').doc(doc.id).delete();
         removed++;
         continue;
@@ -792,6 +825,7 @@ app.post('/admin/migrate-dictionary', authenticateAdminToken, async (req, res) =
       const currentKey = data.key;
       const currentValue = data.value;
 
+      // Sanitize key/value trước khi cập nhật
       const sanitizedKey = currentKey.trim().substring(0, DICTIONARY_MAX_LENGTH);
       const sanitizedValue = currentValue.trim().substring(0, DICTIONARY_MAX_LENGTH);
 

@@ -548,7 +548,6 @@ app.post('/admin/login', async (req, res) => {
 
 app.post('/admin/verify-tfa', async (req, res) => {
   const { code, tfaToken } = req.body;
-  // Sử dụng tfaCode thay vì code nếu client gửi tfaCode (giữ code để đảm bảo tương thích)
   const tfaCode = code || req.body.tfaCode; 
   if (!tfaCode || !tfaToken) return res.status(400).json({ error: 'Thiếu mã xác thực hoặc token.' });
 
@@ -573,7 +572,6 @@ app.post('/admin/verify-tfa', async (req, res) => {
         res.cookie('adminToken', token, {
           httpOnly: true,
           secure: true,
-          // Sử dụng SameSite=Lax nếu app được host cùng tên miền hoặc SameSite=None nếu khác tên miền (yêu cầu Secure=true)
           sameSite: 'Lax', 
           maxAge: 12 * 60 * 60 * 1000,
         }).json({ success: true, message: 'Đăng nhập thành công.' });
@@ -592,7 +590,6 @@ app.get('/admin/verify-session', authenticateAdminToken, (req, res) => {
 });
 
 app.post('/admin/logout', (req, res) => {
-  // Đảm bảo các tham số cookie khớp với lúc set
   res.clearCookie('adminToken', { httpOnly: true, secure: true, sameSite: 'Lax' }) 
      .json({ success: true, message: 'Đã đăng xuất.' });
 });
@@ -713,7 +710,7 @@ app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
     const adminData = await getAdminData();
     let unbanned = false;
     
-    // Đảm bảo type là chữ thường để so sánh (KHẮC PHỤC LỖI BẠN BÁO CÁO)
+    // Đảm bảo type là chữ thường để so sánh (KHẮC PHỤC LỖI BẠN BÁO CÁO TRƯỚC)
     const lowerCaseType = type.toLowerCase(); 
 
     if (lowerCaseType === 'ip' && adminData.banned_ips?.[value]) {
@@ -728,7 +725,7 @@ app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
       await updateAdminData({ banned_ips: adminData.banned_ips, banned_fingerprints: adminData.banned_fingerprints });
       res.json({ success: true, message: `${type} ${value} đã được gỡ cấm thành công.` });
     } else {
-      // Sửa lỗi: Trả về lỗi nếu không tìm thấy, nguyên nhân chính là type không khớp
+      // Sửa lỗi: Trả về lỗi nếu không tìm thấy
       res.status(404).json({ error: `${type} ${value} không nằm trong danh sách cấm.` });
     }
   } catch (error) {
@@ -738,12 +735,14 @@ app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
 });
 
 // --- DICTIONARY ADMIN APIs ---
-// ĐÃ FIX: Đảm bảo trả về mảng hợp lệ (Fix 2)
+// ĐÃ FIX: Đảm bảo phản hồi luôn chứa dictionary: [] trong trường hợp lỗi (Khắc phục lỗi f.map is not a function)
 app.get('/admin/dictionary', authenticateAdminToken, async (req, res) => {
-  if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
+  // KHẮC PHỤC 1: Nếu Firestore không sẵn sàng, trả về 503 kèm dictionary: []
+  if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.', dictionary: [] });
   try {
     const snapshot = await db.collection('dictionary').get();
     
+    // Đảm bảo dữ liệu là mảng hợp lệ
     const dictionary = snapshot.docs
       .map(doc => ({ id: doc.id, ...doc.data() }))
       .filter(item => typeof item === 'object' && item !== null); 
@@ -751,7 +750,8 @@ app.get('/admin/dictionary', authenticateAdminToken, async (req, res) => {
     res.json({ success: true, dictionary: dictionary || [] });
   } catch (error) {
     console.error('Lỗi khi lấy dictionary:', error && error.message ? error.message : error);
-    res.status(500).json({ error: 'Lỗi server khi lấy dictionary.' });
+    // KHẮC PHỤC 2: Nếu có lỗi server, trả về 500 kèm dictionary: []
+    res.status(500).json({ error: 'Lỗi server khi lấy dictionary.', dictionary: [] });
   }
 });
 

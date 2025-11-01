@@ -590,37 +590,70 @@ app.post('/admin/logout', (req, res) => {
      .json({ success: true, message: 'Đã đăng xuất.' });
 });
 
+// FIX 3: Cập nhật hàm này để trả về 4 Object dữ liệu cấm (tương thích App.jsx)
 app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
   try {
     const adminData = await getAdminData();
     const now = Date.now();
 
+    // Hàm làm sạch và lọc ban hết hạn
     const cleanBans = (bans) => {
       let activeBans = {};
-      for (const [key, expiresAt] of Object.entries(bans || {})) { // Thêm || {} phòng thủ
+      let expiredCount = 0;
+      for (const [key, expiresAt] of Object.entries(bans || {})) {
         if (expiresAt === PERMANENT_BAN_VALUE || now < expiresAt) {
           activeBans[key] = expiresAt;
+        } else {
+          expiredCount++;
         }
       }
-      return activeBans;
+      return { activeBans, expiredCount };
     };
 
-    const activeIps = cleanBans(adminData.banned_ips);
-    const activeFp = cleanBans(adminData.banned_fingerprints);
+    const { activeBans: activeIps, expiredCount: expiredIps } = cleanBans(adminData.banned_ips);
+    const { activeBans: activeFp, expiredCount: expiredFp } = cleanBans(adminData.banned_fingerprints);
     
     // Cập nhật lại Firestore sau khi dọn dẹp (non-blocking)
-    if (Object.keys(activeIps).length !== Object.keys(adminData.banned_ips || {}).length ||
-        Object.keys(activeFp).length !== Object.keys(adminData.banned_fingerprints || {}).length) {
-          updateAdminData({ banned_ips: activeIps, banned_fingerprints: activeFp }).catch(e => {});
+    if (expiredIps > 0 || expiredFp > 0) {
+      updateAdminData({ banned_ips: activeIps, banned_fingerprints: activeFp }).catch(e => {});
     }
+
+    // --- LOGIC TÁCH DỮ LIỆU CẤM SANG 4 OBJECT THEO YÊU CẦU CỦA CLIENT ---
+    const permanent_banned_ips = {};
+    const temporary_banned_ips = {};
+    const permanent_banned_fingerprints = {};
+    const temporary_banned_fingerprints = {};
+
+    for (const [ip, expiry] of Object.entries(activeIps)) {
+        if (expiry === PERMANENT_BAN_VALUE) {
+            permanent_banned_ips[ip] = expiry;
+        } else {
+            temporary_banned_ips[ip] = expiry;
+        }
+    }
+
+    for (const [fp, expiry] of Object.entries(activeFp)) {
+        if (expiry === PERMANENT_BAN_VALUE) {
+            permanent_banned_fingerprints[fp] = expiry;
+        } else {
+            temporary_banned_fingerprints[fp] = expiry;
+        }
+    }
+    // ----------------------------------------------------------------------
 
     res.json({
       success: true,
-      totalRequests: adminData.total_requests || 0,
-      totalFailedRecaptcha: adminData.total_failed_recaptcha || 0,
-      bannedIps: Object.entries(activeIps).map(([key, value]) => ({ type: 'IP', id: key, expires: value })),
-      bannedFingerprints: Object.entries(activeFp).map(([key, value]) => ({ type: 'FP', id: key, expires: value })),
+      // Đóng gói thống kê vào object 'stats'
+      stats: {
+        total_requests: adminData.total_requests || 0,
+        total_failed_recaptcha: adminData.total_failed_recaptcha || 0,
+      },
+      // TRẢ VỀ THEO ĐỊNH DẠNG App.jsx (client) CẦN
+      permanent_banned_ips,
+      temporary_banned_ips,
+      permanent_banned_fingerprints,
+      temporary_banned_fingerprints,
     });
   } catch (error) {
     console.error('Lỗi khi lấy dashboard data:', error && error.message ? error.message : error);
@@ -630,18 +663,19 @@ app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => {
 
 app.post('/admin/ban', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
-  const { type, id, duration } = req.body; // type: 'IP' or 'FP', duration: 'permanent' or 'temporary'
-  if (!type || !id || !duration) return res.status(400).json({ error: 'Thiếu thông tin.' });
+  // Lưu ý: Client App.jsx chỉ gửi duration: 'permanent' cho ban thủ công
+  const { type, value, duration } = req.body; // type: 'IP' or 'fingerprint', value: ip/fp, duration: 'permanent' or 'temporary'
+  if (!type || !value || !duration) return res.status(400).json({ error: 'Thiếu thông tin.' });
 
   try {
     const expiresAt = duration === 'permanent' ? PERMANENT_BAN_VALUE : Date.now() + BAN_DURATION_MS;
     const updateKey = type === 'IP' ? 'banned_ips' : 'banned_fingerprints';
     const adminData = await getAdminData();
     const currentBans = adminData[updateKey] || {};
-    currentBans[id] = expiresAt;
+    currentBans[value] = expiresAt; // Đổi 'id' thành 'value' để khớp với request body từ client
     
     await updateAdminData({ [updateKey]: currentBans });
-    res.json({ success: true, message: `${type} ${id} đã bị cấm thành công.` });
+    res.json({ success: true, message: `${type} ${value} đã bị cấm thành công.` });
   } catch (error) {
     console.error('Lỗi khi cấm:', error && error.message ? error.message : error);
     res.status(500).json({ error: 'Lỗi server khi cấm.' });
@@ -650,19 +684,19 @@ app.post('/admin/ban', authenticateAdminToken, async (req, res) => {
 
 app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
-  const { type, id } = req.body;
-  if (!type || !id) return res.status(400).json({ error: 'Thiếu thông tin.' });
+  const { type, value } = req.body; // Client App.jsx dùng 'value' thay vì 'id'
+  if (!type || !value) return res.status(400).json({ error: 'Thiếu thông tin.' });
 
   try {
     const updateKey = type === 'IP' ? 'banned_ips' : 'banned_fingerprints';
     const adminData = await getAdminData();
     const currentBans = adminData[updateKey] || {};
-    if (currentBans[id]) {
-      delete currentBans[id];
+    if (currentBans[value]) {
+      delete currentBans[value];
       await updateAdminData({ [updateKey]: currentBans });
-      res.json({ success: true, message: `${type} ${id} đã được gỡ cấm thành công.` });
+      res.json({ success: true, message: `${type} ${value} đã được gỡ cấm thành công.` });
     } else {
-      res.status(404).json({ error: `${type} ${id} không nằm trong danh sách cấm.` });
+      res.status(404).json({ error: `${type} ${value} không nằm trong danh sách cấm.` });
     }
   } catch (error) {
     console.error('Lỗi khi gỡ cấm:', error && error.message ? error.message : error);

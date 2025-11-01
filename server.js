@@ -55,7 +55,7 @@ const ADMIN_USERNAME_HASH = process.env.ADMIN_USERNAME_HASH;
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH;
 const JWT_SECRET = process.env.JWT_SECRET;
 const DICTIONARY_MAX_LENGTH = 500; // [PHÒNG THỦ] Giới hạn độ dài key/value để bảo vệ ReDoS
-const RECAPTCHA_SCORE_THRESHOLD = 0.75; // [PHÒNG THỦ] Ngưỡng điểm reCAPTCHA V3
+const RECAPTCHA_SCORE_THRESHOLD = 0.75; // [PHÒNG THỦ] Ngưỡng điểm reCAPTCHA V3 (ĐÃ PHỤC HỒI)
 const RECAPTCHA_EXPECTED_ACTION = 'giai_ma'; // [PHÒNG THỦ] Hành động dự kiến từ client
 
 if (!JWT_SECRET) {
@@ -149,7 +149,6 @@ function escapeRegExpString(s) {
 }
 
 function buildRegexForKeySafe(key) {
-  // [PHÒNG THỦ] Max length check to prevent potential ReDoS/DoS from extremely long keys
   const keyStr = String(key);
   if (keyStr.length > DICTIONARY_MAX_LENGTH) {
     console.warn('[Regex] Key quá dài, bỏ qua tạo regex:', keyStr.length);
@@ -184,7 +183,6 @@ async function listenForDictionaryChanges() {
           const regex = buildRegexForKeySafe(keyStr);
           initialEntries.push({ id: doc.id, key: keyStr, value: valueStr, regex });
         } catch (e) {
-          // Will catch the 'Key length exceeds safety limit.' error as well
           console.warn(`[Cache] Bỏ qua doc ${doc.id} do lỗi tạo regex:`, e && e.message ? e.message : e);
         }
       }
@@ -237,6 +235,7 @@ const LOGIN_BAN_DURATION_MS = 60 * 60 * 1000;
 const PERMANENT_BAN_VALUE = Number.MAX_SAFE_INTEGER;
 const FAILED_ATTEMPTS_THRESHOLD = 5;
 const LOGIN_ATTEMPTS_THRESHOLD = 10;
+const RECAPTCHA_FAIL_THRESHOLD = 10; // [PHÒNG THỦ MỚI] Ngưỡng thất bại reCAPTCHA liên tiếp
 
 const getAdminDataDocRef = () => {
   if (!db) return null;
@@ -272,12 +271,6 @@ async function updateAdminData(dataToUpdate) {
 // --- UTIL ---
 function getClientIp(req) { return (req.headers['x-forwarded-for'] || req.ip).split(',')[0].trim(); }
 function normalizeIp(ip) { return ip && ip.startsWith('::ffff:') ? ip.substring(7) : ip; }
-
-function sanitizeDictionaryInput(input, maxLength = DICTIONARY_MAX_LENGTH) { // [PHÒNG THỦ]
-  if (typeof input !== 'string') return '';
-  // Trim and limit length. Keeps flexibility for key/value while preventing abuse.
-  return input.trim().substring(0, maxLength);
-}
 
 function sanitizeInput(input) {
   if (typeof input !== 'string') return '';
@@ -338,7 +331,7 @@ function authenticateAdminToken(req, res, next) {
   });
 }
 
-// --- reCAPTCHA verify utility (timeout + retry + safe logging) ---
+// --- reCAPTCHA verify utility (timeout + retry + safe logging + V3 logic) ---
 async function verifyRecaptcha(recaptchaToken, remoteIp, attempts = 2, timeoutMs = 5000) {
   const url = 'https://www.google.com/recaptcha/api/siteverify';
   for (let i = 0; i < attempts; i++) {
@@ -357,7 +350,7 @@ async function verifyRecaptcha(recaptchaToken, remoteIp, attempts = 2, timeoutMs
       const data = await resp.json();
       
       // [LOGIC PHÒNG THỦ CỐT LÕI] Kiểm tra reCAPTCHA V3 (Score + Action)
-      const isScoreAcceptable = typeof data.score === 'number' && data.score > RECAPTCHA_SCORE_THRESHOLD;
+      const isScoreAcceptable = typeof data.score === 'number' && data.score >= RECAPTCHA_SCORE_THRESHOLD;
       const isActionCorrect = data.action === RECAPTCHA_EXPECTED_ACTION;
 
       // Thành công tổng thể phải thỏa mãn success, score, VÀ action
@@ -366,6 +359,7 @@ async function verifyRecaptcha(recaptchaToken, remoteIp, attempts = 2, timeoutMs
       const ipLog = remoteIp || '<no-ip>';
       console.log(`${ipLog} - reCAPTCHA success: ${!!data.success}, score: ${data.score || 0}, action: ${data.action}, accepted: ${isSuccessful}`);
       
+      // Thêm score/action vào return để logic /giai-ma có thể sử dụng (ví dụ: in lỗi cụ thể)
       return { ok: isSuccessful, data, score: data.score, action: data.action };
     } catch (err) {
       clearTimeout(timer);
@@ -394,41 +388,76 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
   const ip = normalizeIp(getClientIp(req));
   if (!userInput || !recaptchaToken) return res.status(400).json({ error: 'Thiếu dữ liệu.' });
 
-  // verify recaptcha (V3 Logic)
+  // verify recaptcha
   const recaptchaResult = await verifyRecaptcha(recaptchaToken, ip, 2, 5000);
   
+  // --- LỚP PHÒNG THỦ 2: BẮT LỖI reCAPTCHA VÀ BAN IP TỰ ĐỘNG ---
   if (!recaptchaResult.ok) {
-    if (!recaptchaResult.data?.success) {
-      // API call failed, token invalid, etc.
-      if (recaptchaResult.data && recaptchaResult.data['error-codes']) {
-        const codes = recaptchaResult.data['error-codes'];
-        if (codes.includes('invalid-input-secret')) {
-          console.error('[reCAPTCHA] invalid secret (check env)');
-          return res.status(500).json({ error: 'Lỗi server: Cấu hình reCAPTCHA sai.' });
-        }
-      }
-      await updateAdminData({ total_failed_recaptcha: FieldValue.increment(1) });
-      return res.status(401).json({ error: 'Xác thực reCAPTCHA thất bại (Token không hợp lệ hoặc hết hạn).' });
+    const adminData = await getAdminData();
+    const failedAttempts = adminData.failedAttempts || {};
+    
+    // Tăng biến thống kê tổng
+    await updateAdminData({ total_failed_recaptcha: FieldValue.increment(1) });
+
+    // Kích hoạt logic CẤM IP cho thất bại reCAPTCHA
+    if (!failedAttempts[ip]) failedAttempts[ip] = {};
+    const currentFails = (failedAttempts[ip].recaptcha_fail_count || 0) + 1;
+    failedAttempts[ip].recaptcha_fail_count = currentFails;
+
+    if (currentFails >= RECAPTCHA_FAIL_THRESHOLD) {
+      // Cấm IP 12 giờ (sử dụng hằng số BAN_DURATION_MS đã có)
+      const banExpiresAt = Date.now() + BAN_DURATION_MS;
+      const currentBannedIps = adminData.banned_ips || {};
+      currentBannedIps[ip] = banExpiresAt;
+
+      // Xóa bộ đếm thất bại sau khi cấm
+      delete failedAttempts[ip].recaptcha_fail_count;
+      
+      console.log(`[BAN-AUTODEFENSE] IP ${ip} đã bị cấm 12 giờ do ${currentFails} lần thất bại reCAPTCHA liên tiếp.`);
+
+      // Cập nhật cả banned_ips và failedAttempts
+      await updateAdminData({ 
+          failedAttempts: failedAttempts, 
+          banned_ips: currentBannedIps
+      });
+
+      // Trả về lỗi 429 - Too Many Requests (Bot đã bị chặn)
+      return res.status(429).json({ error: `Hệ thống phát hiện hoạt động bất thường. IP của bạn đã bị tạm khóa 12 giờ.` });
+    } else {
+        // Chỉ cập nhật bộ đếm nếu chưa đạt ngưỡng cấm
+        await updateAdminData({ failedAttempts });
     }
     
-    // Nếu reCAPTCHA success nhưng score/action failed (V3 logic)
-    if (recaptchaResult.score < RECAPTCHA_SCORE_THRESHOLD) {
-      console.warn(`[reCAPTCHA] Bị từ chối do điểm số thấp: ${recaptchaResult.score} < ${RECAPTCHA_SCORE_THRESHOLD}`);
-      await updateAdminData({ total_failed_recaptcha: FieldValue.increment(1) });
-      return res.status(401).json({ error: `Xác thực reCAPTCHA thất bại (Điểm ${recaptchaResult.score} quá thấp).` });
+    // Xử lý lỗi reCAPTCHA thông thường (sau khi đã xử lý logic cấm IP)
+    let errorMessage = 'Xác thực reCAPTCHA thất bại.';
+    if (recaptchaResult.score !== undefined && recaptchaResult.score < RECAPTCHA_SCORE_THRESHOLD) {
+        errorMessage = `Xác thực reCAPTCHA thất bại (Điểm ${recaptchaResult.score} quá thấp).`;
+    } else if (recaptchaResult.action && recaptchaResult.action !== RECAPTCHA_EXPECTED_ACTION) {
+        errorMessage = `Xác thực reCAPTCHA thất bại (Action ${recaptchaResult.action} không khớp).`;
+    } else if (recaptchaResult.data && recaptchaResult.data['error-codes']) {
+        const codes = recaptchaResult.data['error-codes'];
+        if (codes.includes('invalid-input-secret')) {
+            console.error('[reCAPTCHA] invalid secret (check env)');
+            return res.status(500).json({ error: 'Lỗi server: Cấu hình reCAPTCHA sai.' });
+        }
+    } else if (recaptchaResult.error === 'network-or-timeout' || recaptchaResult.error === 'http-error') {
+        return res.status(500).json({ error: 'Lỗi khi xác thực reCAPTCHA.' });
     }
-    if (recaptchaResult.action !== RECAPTCHA_EXPECTED_ACTION) {
-      console.warn(`[reCAPTCHA] Bị từ chối do action không khớp: ${recaptchaResult.action} != ${RECAPTCHA_EXPECTED_ACTION}`);
-      await updateAdminData({ total_failed_recaptcha: FieldValue.increment(1) });
-      return res.status(401).json({ error: `Xác thực reCAPTCHA thất bại (Action không khớp: ${recaptchaResult.action}).` });
-    }
+    
+    return res.status(401).json({ error: errorMessage });
+  }
 
-    if (recaptchaResult.error === 'network-or-timeout' || recaptchaResult.error === 'http-error') {
-      console.error('[reCAPTCHA] transient verify failure:', recaptchaResult);
-      return res.status(500).json({ error: 'Lỗi khi xác thực reCAPTCHA.' });
+  // --- NẾU reCAPTCHA THÀNH CÔNG: XÓA BỘ ĐẾM THẤT BẠI ---
+  if (recaptchaResult.ok) {
+    const adminData = await getAdminData();
+    const failedAttempts = adminData.failedAttempts || {};
+    if (failedAttempts[ip]?.recaptcha_fail_count) {
+      delete failedAttempts[ip].recaptcha_fail_count;
+      await updateAdminData({ failedAttempts });
     }
   }
 
+  // --- XỬ LÝ YÊU CẦU BÌNH THƯỜNG ---
   try {
     await updateAdminData({ total_requests: FieldValue.increment(1) });
     let text = sanitizeInput(userInput);
@@ -472,8 +501,12 @@ app.post('/admin/login', async (req, res) => {
     const isPasswordMatch = await bcrypt.compare(password, ADMIN_PASSWORD_HASH);
 
     if (isUsernameMatch && isPasswordMatch) {
+      // Clear login failed counter on success
       if (failedAttempts[ip]) {
-        delete failedAttempts[ip];
+        delete failedAttempts[ip].login;
+        if (Object.keys(failedAttempts[ip]).length === 0) {
+            delete failedAttempts[ip];
+        }
         await updateAdminData({ failedAttempts });
       }
 
@@ -505,7 +538,8 @@ app.post('/admin/login', async (req, res) => {
       }
 
       await updateAdminData({ failedAttempts });
-      res.status(401).json({ error: 'Tên đăng nhập hoặc mật khẩu không đúng.' });
+      const attemptsLeft = LOGIN_ATTEMPTS_THRESHOLD - currentFails;
+      res.status(401).json({ error: `Tên đăng nhập hoặc mật khẩu không đúng. Còn ${attemptsLeft} lần thử.` });
     }
   } catch (error) {
     console.error('Lỗi trong quá trình đăng nhập admin:', error && error.message ? error.message : error);
@@ -514,211 +548,224 @@ app.post('/admin/login', async (req, res) => {
 });
 
 app.post('/admin/verify-tfa', async (req, res) => {
-  const { tfaToken, tfaCode } = req.body;
-  if (!db || !tfaToken || !tfaCode) return res.status(400).json({ error: 'Yêu cầu không hợp lệ.' });
+  const { code, tfaToken } = req.body;
+  if (!code || !tfaToken) return res.status(400).json({ error: 'Thiếu mã xác thực hoặc token.' });
 
-  jwt.verify(tfaToken, JWT_SECRET, async (err, decoded) => {
-    if (err) return res.status(403).json({ error: 'Phiên đã hết hạn. Vui lòng đăng nhập lại.' });
+  jwt.verify(tfaToken, JWT_SECRET, async (err, user) => {
+    if (err) return res.status(403).json({ error: 'Phiên xác thực 2FA đã hết hạn.' });
 
-    const adminData = await getAdminData();
-    if (!adminData.tfa_secret) return res.status(403).json({ error: '2FA chưa được thiết lập.' });
+    try {
+      const adminData = await getAdminData();
+      const tfaSecret = adminData.tfa_secret;
 
-    const verified = speakeasy.totp.verify({ secret: adminData.tfa_secret, encoding: 'base32', token: tfaCode, window: 1 });
+      if (!tfaSecret) return res.status(500).json({ error: 'Lỗi server: Chưa có Secret 2FA.' });
 
-    if (verified) {
-      const adminToken = jwt.sign({ username: decoded.username, role: 'admin' }, JWT_SECRET, { expiresIn: '8h' });
-
-      res.cookie('adminToken', adminToken, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-        maxAge: 8 * 3600000,
+      const verified = speakeasy.totp.verify({
+        secret: tfaSecret,
+        encoding: 'base32',
+        token: code,
+        window: 1,
       });
-      res.json({ success: true, message: 'Đăng nhập thành công!' });
-    } else {
-      res.status(401).json({ error: 'Mã xác thực không chính xác.' });
+
+      if (verified) {
+        const token = jwt.sign({ username: user.username, role: 'admin' }, JWT_SECRET, { expiresIn: '12h' });
+        res.cookie('adminToken', token, {
+          httpOnly: true,
+          secure: true,
+          sameSite: 'Lax',
+          maxAge: 12 * 60 * 60 * 1000,
+        }).json({ success: true, message: 'Đăng nhập thành công.' });
+      } else {
+        res.status(401).json({ error: 'Mã xác thực 2FA không đúng.' });
+      }
+    } catch (error) {
+      console.error('Lỗi khi xử lý 2FA:', error && error.message ? error.message : error);
+      res.status(500).json({ error: 'Lỗi server khi xác thực 2FA.' });
     }
   });
 });
 
-app.get('/admin/verify-session', authenticateAdminToken, (req, res) => res.json({ success: true, loggedIn: true }));
-app.post('/admin/logout', (req, res) => { res.clearCookie('adminToken', { httpOnly: true, secure: true, sameSite: 'none' }); res.json({ success: true }); });
+app.get('/admin/verify-session', authenticateAdminToken, (req, res) => {
+  res.json({ success: true, message: 'Phiên hợp lệ.', username: req.user.username });
+});
+
+app.post('/admin/logout', (req, res) => {
+  res.clearCookie('adminToken', { httpOnly: true, secure: true, sameSite: 'Lax' })
+     .json({ success: true, message: 'Đã đăng xuất.' });
+});
 
 app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
   try {
     const adminData = await getAdminData();
     const now = Date.now();
-    const permanentBannedIps = {}, temporaryBannedIps = {};
-    if (adminData.banned_ips) {
-      for (const [ip, expiry] of Object.entries(adminData.banned_ips)) {
-        if (expiry === PERMANENT_BAN_VALUE) permanentBannedIps[ip] = expiry;
-        else if (expiry > now) temporaryBannedIps[ip] = expiry;
+
+    const cleanBans = (bans) => {
+      let activeBans = {};
+      for (const [key, expiresAt] of Object.entries(bans)) {
+        if (expiresAt === PERMANENT_BAN_VALUE || now < expiresAt) {
+          activeBans[key] = expiresAt;
+        }
       }
+      return activeBans;
+    };
+
+    const activeIps = cleanBans(adminData.banned_ips || {});
+    const activeFp = cleanBans(adminData.banned_fingerprints || {});
+    
+    // Cập nhật lại Firestore sau khi dọn dẹp (non-blocking)
+    if (Object.keys(activeIps).length !== Object.keys(adminData.banned_ips || {}).length ||
+        Object.keys(activeFp).length !== Object.keys(adminData.banned_fingerprints || {}).length) {
+          updateAdminData({ banned_ips: activeIps, banned_fingerprints: activeFp }).catch(e => {});
     }
-    const permanentBannedFingerprints = {}, temporaryBannedFingerprints = {};
-    if (adminData.banned_fingerprints) {
-      for (const [fpId, banTime] of Object.entries(adminData.banned_fingerprints)) {
-        if (banTime === PERMANENT_BAN_VALUE) permanentBannedFingerprints[fpId] = banTime;
-        else if (banTime > now) temporaryBannedFingerprints[fpId] = banTime;
-      }
-    }
+
     res.json({
       success: true,
-      stats: { total_requests: adminData.total_requests || 0, total_failed_recaptcha: adminData.total_failed_recaptcha || 0 },
-      permanent_banned_ips: permanentBannedIps, temporary_banned_ips: temporaryBannedIps,
-      permanent_banned_fingerprints: permanentBannedFingerprints, temporary_banned_fingerprints: temporaryBannedFingerprints,
+      totalRequests: adminData.total_requests || 0,
+      totalFailedRecaptcha: adminData.total_failed_recaptcha || 0,
+      bannedIps: Object.entries(activeIps).map(([key, value]) => ({ type: 'IP', id: key, expires: value })),
+      bannedFingerprints: Object.entries(activeFp).map(([key, value]) => ({ type: 'FP', id: key, expires: value })),
     });
   } catch (error) {
-    res.status(500).json({ error: 'Lỗi khi lấy dữ liệu admin.' });
+    console.error('Lỗi khi lấy dashboard data:', error && error.message ? error.message : error);
+    res.status(500).json({ error: 'Lỗi server khi lấy dữ liệu.' });
   }
 });
 
 app.post('/admin/ban', authenticateAdminToken, async (req, res) => {
-  const { type, value, duration } = req.body;
-  if (!db || !type || !value) return res.status(400).json({ error: 'Yêu cầu không hợp lệ.' });
-  try {
-    const adminData = await getAdminData();
-    const banExpiresAt = duration === 'permanent' ? PERMANENT_BAN_VALUE : Date.now() + BAN_DURATION_MS;
-    if (type === 'ip') (adminData.banned_ips = adminData.banned_ips || {})[value] = banExpiresAt;
-    else if (type === 'fingerprint') (adminData.banned_fingerprints = adminData.banned_fingerprints || {})[value] = banExpiresAt;
-    else return res.status(400).json({ error: 'Loại ban không hợp lệ.' });
+  if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
+  const { type, id, duration } = req.body; // type: 'IP' or 'FP', duration: 'permanent' or 'temporary'
+  if (!type || !id || !duration) return res.status(400).json({ error: 'Thiếu thông tin.' });
 
-    await updateAdminData({ banned_ips: adminData.banned_ips, banned_fingerprints: adminData.banned_fingerprints });
-    res.json({ success: true, message: `Đã ban ${type}: ${value}` });
+  try {
+    const expiresAt = duration === 'permanent' ? PERMANENT_BAN_VALUE : Date.now() + BAN_DURATION_MS;
+    const updateKey = type === 'IP' ? 'banned_ips' : 'banned_fingerprints';
+    const adminData = await getAdminData();
+    const currentBans = adminData[updateKey] || {};
+    currentBans[id] = expiresAt;
+    
+    await updateAdminData({ [updateKey]: currentBans });
+    res.json({ success: true, message: `${type} ${id} đã bị cấm thành công.` });
   } catch (error) {
-    res.status(500).json({ error: 'Lỗi khi ban.' });
+    console.error('Lỗi khi cấm:', error && error.message ? error.message : error);
+    res.status(500).json({ error: 'Lỗi server khi cấm.' });
   }
 });
 
 app.post('/admin/unban', authenticateAdminToken, async (req, res) => {
-  const { type, value } = req.body;
-  if (!db || !type || !value) return res.status(400).json({ error: 'Yêu cầu không hợp lệ.' });
+  if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
+  const { type, id } = req.body;
+  if (!type || !id) return res.status(400).json({ error: 'Thiếu thông tin.' });
+
   try {
+    const updateKey = type === 'IP' ? 'banned_ips' : 'banned_fingerprints';
     const adminData = await getAdminData();
-    let unbanned = false;
-    if (type === 'ip' && adminData.banned_ips?.[value]) {
-      delete adminData.banned_ips[value];
-      unbanned = true;
-    } else if (type === 'fingerprint' && adminData.banned_fingerprints?.[value]) {
-      delete adminData.banned_fingerprints[value];
-      unbanned = true;
-    }
-    if (unbanned) {
-      await updateAdminData({ banned_ips: adminData.banned_ips, banned_fingerprints: adminData.banned_fingerprints });
-      res.json({ success: true, message: `Đã gỡ cấm ${type}: ${value}` });
+    const currentBans = adminData[updateKey] || {};
+    if (currentBans[id]) {
+      delete currentBans[id];
+      await updateAdminData({ [updateKey]: currentBans });
+      res.json({ success: true, message: `${type} ${id} đã được gỡ cấm thành công.` });
     } else {
-      res.status(404).json({ error: 'Không tìm thấy mục để gỡ cấm.' });
+      res.status(404).json({ error: `${type} ${id} không nằm trong danh sách cấm.` });
     }
   } catch (error) {
-    res.status(500).json({ error: 'Lỗi khi gỡ cấm.' });
+    console.error('Lỗi khi gỡ cấm:', error && error.message ? error.message : error);
+    res.status(500).json({ error: 'Lỗi server khi gỡ cấm.' });
   }
 });
 
-// --- ADMIN: DICTIONARY MANAGEMENT ---
+// --- DICTIONARY ADMIN APIs ---
 app.get('/admin/dictionary', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
   try {
     const snapshot = await db.collection('dictionary').get();
     const dictionary = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    res.json(dictionary);
+    res.json({ success: true, dictionary });
   } catch (error) {
-    res.status(500).json({ error: 'Lỗi khi lấy từ điển.' });
+    console.error('Lỗi khi lấy dictionary:', error && error.message ? error.message : error);
+    res.status(500).json({ error: 'Lỗi server khi lấy dictionary.' });
   }
 });
 
 app.post('/admin/dictionary', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
-  try {
-    const { key, value } = req.body;
-    // [PHÒNG THỦ] Thêm sanitization
-    const sanitizedKey = sanitizeDictionaryInput(key);
-    const sanitizedValue = sanitizeDictionaryInput(value);
-    
-    if (!sanitizedKey || !sanitizedValue) return res.status(400).json({ error: 'Thiếu key hoặc value hợp lệ.' });
-    if (sanitizedKey.length === 0 || sanitizedValue.length === 0) return res.status(400).json({ error: 'Key hoặc value không được để trống sau khi làm sạch.' });
+  const { key, value } = req.body;
+  
+  if (!key || !value) return res.status(400).json({ error: 'Key và Value không được để trống.' });
 
-    const docRef = await db.collection('dictionary').add({ key: sanitizedKey, value: sanitizedValue });
-    res.status(201).json({ id: docRef.id, key: sanitizedKey, value: sanitizedValue });
+  try {
+    const docRef = await db.collection('dictionary').add({ key, value, createdAt: FieldValue.serverTimestamp() });
+    res.json({ success: true, id: docRef.id, key, value });
   } catch (error) {
-    res.status(500).json({ error: 'Lỗi khi thêm từ mới.' });
+    console.error('Lỗi khi thêm dictionary:', error && error.message ? error.message : error);
+    res.status(500).json({ error: 'Lỗi server khi thêm dictionary.' });
   }
 });
 
 app.put('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
+  const { id } = req.params;
+  const { key, value } = req.body;
+
+  if (!key || !value) return res.status(400).json({ error: 'Key và Value không được để trống.' });
+
   try {
-    const { id } = req.params;
-    const { key, value } = req.body;
-    // [PHÒNG THỦ] Thêm sanitization
-    const sanitizedKey = sanitizeDictionaryInput(key);
-    const sanitizedValue = sanitizeDictionaryInput(value);
-
-    if (!sanitizedKey || !sanitizedValue) return res.status(400).json({ error: 'Thiếu key hoặc value hợp lệ.' });
-    if (sanitizedKey.length === 0 || sanitizedValue.length === 0) return res.status(400).json({ error: 'Key hoặc value không được để trống sau khi làm sạch.' });
-
-    await db.collection('dictionary').doc(id).update({ key: sanitizedKey, value: sanitizedValue });
-    res.json({ success: true });
+    await db.collection('dictionary').doc(id).update({ key, value, updatedAt: FieldValue.serverTimestamp() });
+    res.json({ success: true, message: 'Cập nhật thành công.' });
   } catch (error) {
-    res.status(500).json({ error: 'Lỗi khi cập nhật từ.' });
+    console.error(`Lỗi khi cập nhật dictionary id ${id}:`, error && error.message ? error.message : error);
+    res.status(500).json({ error: 'Lỗi server khi cập nhật dictionary.' });
   }
 });
 
 app.delete('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
+  const { id } = req.params;
+
   try {
-    await db.collection('dictionary').doc(req.params.id).delete();
-    res.json({ success: true });
+    await db.collection('dictionary').doc(id).delete();
+    res.json({ success: true, message: 'Xóa thành công.' });
   } catch (error) {
-    res.status(500).json({ error: 'Lỗi khi xóa từ.' });
+    console.error(`Lỗi khi xóa dictionary id ${id}:`, error && error.message ? error.message : error);
+    res.status(500).json({ error: 'Lỗi server khi xóa dictionary.' });
   }
 });
 
-// --- Optional migration endpoint ---
 app.post('/admin/migrate-dictionary', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
-  const action = (req.body && req.body.action) || 'convert-only';
   try {
-    const snap = await db.collection('dictionary').get();
-    let updated = 0, removed = 0, processed = 0;
-    for (const doc of snap.docs) {
+    const snapshot = await db.collection('dictionary').get();
+    let updated = 0;
+    let removed = 0;
+    let processed = 0;
+
+    for (const doc of snapshot.docs) {
       processed++;
       const data = doc.data() || {};
-      const hasKey = Object.prototype.hasOwnProperty.call(data, 'key');
-      const hasValue = Object.prototype.hasOwnProperty.call(data, 'value');
+      const update = {};
 
-      if (!hasKey && !hasValue) {
-        if (action === 'delete-empty') {
-          await db.collection('dictionary').doc(doc.id).delete();
-          removed++;
-        }
+      const hasKey = typeof data.key === 'string' && data.key.trim().length > 0;
+      const hasValue = typeof data.value === 'string' && data.value.trim().length > 0;
+
+      if (!hasKey || !hasValue) {
+        await db.collection('dictionary').doc(doc.id).delete();
+        removed++;
         continue;
       }
-
-      const update = {};
       
-      const rawKey = data.key;
-      const rawValue = data.value;
-      let newKey = rawKey;
-      let newValue = rawValue;
+      const currentKey = data.key;
+      const currentValue = data.value;
 
-      // [PHÒNG THỦ] Áp dụng sanitization/limitation cho migration
-      if (typeof rawKey === 'string') {
-        newKey = sanitizeDictionaryInput(rawKey);
-        if (newKey !== rawKey) update.key = newKey;
-      }
-      if (typeof rawValue === 'string') {
-        newValue = sanitizeDictionaryInput(rawValue);
-        if (newValue !== rawValue) update.value = newValue;
-      }
+      const sanitizedKey = currentKey.trim().substring(0, DICTIONARY_MAX_LENGTH);
+      const sanitizedValue = currentValue.trim().substring(0, DICTIONARY_MAX_LENGTH);
 
-      if (!hasKey || typeof rawKey !== 'string') {
-          update.key = sanitizeDictionaryInput(String(doc.id));
+      if (sanitizedKey !== currentKey) {
+          update.key = sanitizedKey;
       }
-      if (!hasValue || typeof rawValue !== 'string') {
-          update.value = '';
+      if (sanitizedValue !== currentValue) {
+          update.value = sanitizedValue;
       }
-      // Re-check update keys after basic sanitization
+      
       if (Object.keys(update).length > 0) {
         await db.collection('dictionary').doc(doc.id).update(update);
         updated++;
@@ -732,6 +779,7 @@ app.post('/admin/migrate-dictionary', authenticateAdminToken, async (req, res) =
     return res.status(500).json({ error: 'Lỗi khi migrate dictionary.' });
   }
 });
+
 
 // --- BOOTSTRAP ---
 app.listen(PORT, '0.0.0.0', () => {
@@ -752,4 +800,3 @@ app.listen(PORT, '0.0.0.0', () => {
     console.warn('[Bootstrap] Firebase không sẵn sàng — bạn có thể kiểm tra FIREBASE_SERVICE_ACCOUNT_KEY trong env.');
   }
 })();
-

@@ -54,9 +54,9 @@ const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
 const ADMIN_USERNAME_HASH = process.env.ADMIN_USERNAME_HASH;
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH;
 const JWT_SECRET = process.env.JWT_SECRET;
-const DICTIONARY_MAX_LENGTH = 500; // [PHÒNG THỦ] Giới hạn độ dài key/value để bảo vệ ReDoS
-const RECAPTCHA_SCORE_THRESHOLD = 0.75; // [PHÒNG THỦ] Ngưỡng điểm reCAPTCHA V3 (ĐÃ PHỤC HỒI)
-const RECAPTCHA_EXPECTED_ACTION = 'giai_ma'; // [PHÒNG THỦ] Hành động dự kiến từ client
+const DICTIONARY_MAX_LENGTH = 500; 
+const RECAPTCHA_SCORE_THRESHOLD = 0.75; 
+const RECAPTCHA_EXPECTED_ACTION = 'giai_ma'; 
 
 if (!JWT_SECRET) {
   console.error('Lỗi: JWT_SECRET chưa được đặt trong biến môi trường! Server sẽ không khởi động.');
@@ -235,7 +235,7 @@ const LOGIN_BAN_DURATION_MS = 60 * 60 * 1000;
 const PERMANENT_BAN_VALUE = Number.MAX_SAFE_INTEGER;
 const FAILED_ATTEMPTS_THRESHOLD = 5;
 const LOGIN_ATTEMPTS_THRESHOLD = 10;
-const RECAPTCHA_FAIL_THRESHOLD = 10; // [PHÒNG THỦ MỚI] Ngưỡng thất bại reCAPTCHA liên tiếp
+const RECAPTCHA_FAIL_THRESHOLD = 10; // Ngưỡng thất bại reCAPTCHA liên tiếp
 
 const getAdminDataDocRef = () => {
   if (!db) return null;
@@ -349,17 +349,14 @@ async function verifyRecaptcha(recaptchaToken, remoteIp, attempts = 2, timeoutMs
       }
       const data = await resp.json();
       
-      // [LOGIC PHÒNG THỦ CỐT LÕI] Kiểm tra reCAPTCHA V3 (Score + Action)
       const isScoreAcceptable = typeof data.score === 'number' && data.score >= RECAPTCHA_SCORE_THRESHOLD;
       const isActionCorrect = data.action === RECAPTCHA_EXPECTED_ACTION;
 
-      // Thành công tổng thể phải thỏa mãn success, score, VÀ action
       const isSuccessful = !!data.success && isScoreAcceptable && isActionCorrect;
 
       const ipLog = remoteIp || '<no-ip>';
       console.log(`${ipLog} - reCAPTCHA success: ${!!data.success}, score: ${data.score || 0}, action: ${data.action}, accepted: ${isSuccessful}`);
       
-      // Thêm score/action vào return để logic /giai-ma có thể sử dụng (ví dụ: in lỗi cụ thể)
       return { ok: isSuccessful, data, score: data.score, action: data.action };
     } catch (err) {
       clearTimeout(timer);
@@ -388,7 +385,6 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
   const ip = normalizeIp(getClientIp(req));
   if (!userInput || !recaptchaToken) return res.status(400).json({ error: 'Thiếu dữ liệu.' });
 
-  // verify recaptcha
   const recaptchaResult = await verifyRecaptcha(recaptchaToken, ip, 2, 5000);
   
   // --- LỚP PHÒNG THỦ 2: BẮT LỖI reCAPTCHA VÀ BAN IP TỰ ĐỘNG ---
@@ -396,7 +392,6 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
     const adminData = await getAdminData();
     const failedAttempts = adminData.failedAttempts || {};
     
-    // Tăng biến thống kê tổng
     await updateAdminData({ total_failed_recaptcha: FieldValue.increment(1) });
 
     // Kích hoạt logic CẤM IP cho thất bại reCAPTCHA
@@ -405,7 +400,6 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
     failedAttempts[ip].recaptcha_fail_count = currentFails;
 
     if (currentFails >= RECAPTCHA_FAIL_THRESHOLD) {
-      // Cấm IP 12 giờ (sử dụng hằng số BAN_DURATION_MS đã có)
       const banExpiresAt = Date.now() + BAN_DURATION_MS;
       const currentBannedIps = adminData.banned_ips || {};
       currentBannedIps[ip] = banExpiresAt;
@@ -413,15 +407,18 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
       // Xóa bộ đếm thất bại sau khi cấm
       delete failedAttempts[ip].recaptcha_fail_count;
       
+      // FIX 1A: Xóa IP entry nếu không còn thuộc tính nào (ví dụ: chỉ còn lock-out login)
+      if (Object.keys(failedAttempts[ip]).length === 0) {
+        delete failedAttempts[ip];
+      }
+      
       console.log(`[BAN-AUTODEFENSE] IP ${ip} đã bị cấm 12 giờ do ${currentFails} lần thất bại reCAPTCHA liên tiếp.`);
 
-      // Cập nhật cả banned_ips và failedAttempts
       await updateAdminData({ 
           failedAttempts: failedAttempts, 
           banned_ips: currentBannedIps
       });
 
-      // Trả về lỗi 429 - Too Many Requests (Bot đã bị chặn)
       return res.status(429).json({ error: `Hệ thống phát hiện hoạt động bất thường. IP của bạn đã bị tạm khóa 12 giờ.` });
     } else {
         // Chỉ cập nhật bộ đếm nếu chưa đạt ngưỡng cấm
@@ -434,12 +431,6 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
         errorMessage = `Xác thực reCAPTCHA thất bại (Điểm ${recaptchaResult.score} quá thấp).`;
     } else if (recaptchaResult.action && recaptchaResult.action !== RECAPTCHA_EXPECTED_ACTION) {
         errorMessage = `Xác thực reCAPTCHA thất bại (Action ${recaptchaResult.action} không khớp).`;
-    } else if (recaptchaResult.data && recaptchaResult.data['error-codes']) {
-        const codes = recaptchaResult.data['error-codes'];
-        if (codes.includes('invalid-input-secret')) {
-            console.error('[reCAPTCHA] invalid secret (check env)');
-            return res.status(500).json({ error: 'Lỗi server: Cấu hình reCAPTCHA sai.' });
-        }
     } else if (recaptchaResult.error === 'network-or-timeout' || recaptchaResult.error === 'http-error') {
         return res.status(500).json({ error: 'Lỗi khi xác thực reCAPTCHA.' });
     }
@@ -453,6 +444,10 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
     const failedAttempts = adminData.failedAttempts || {};
     if (failedAttempts[ip]?.recaptcha_fail_count) {
       delete failedAttempts[ip].recaptcha_fail_count;
+      // FIX 1B: Xóa IP entry nếu không còn thuộc tính nào
+      if (Object.keys(failedAttempts[ip]).length === 0) {
+        delete failedAttempts[ip];
+      }
       await updateAdminData({ failedAttempts });
     }
   }
@@ -502,8 +497,9 @@ app.post('/admin/login', async (req, res) => {
 
     if (isUsernameMatch && isPasswordMatch) {
       // Clear login failed counter on success
-      if (failedAttempts[ip]) {
+      if (failedAttempts[ip]?.login) {
         delete failedAttempts[ip].login;
+        // FIX 1C: Xóa IP entry nếu không còn thuộc tính nào
         if (Object.keys(failedAttempts[ip]).length === 0) {
             delete failedAttempts[ip];
         }
@@ -602,7 +598,7 @@ app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => {
 
     const cleanBans = (bans) => {
       let activeBans = {};
-      for (const [key, expiresAt] of Object.entries(bans)) {
+      for (const [key, expiresAt] of Object.entries(bans || {})) { // Thêm || {} phòng thủ
         if (expiresAt === PERMANENT_BAN_VALUE || now < expiresAt) {
           activeBans[key] = expiresAt;
         }
@@ -610,8 +606,8 @@ app.get('/admin/dashboard-data', authenticateAdminToken, async (req, res) => {
       return activeBans;
     };
 
-    const activeIps = cleanBans(adminData.banned_ips || {});
-    const activeFp = cleanBans(adminData.banned_fingerprints || {});
+    const activeIps = cleanBans(adminData.banned_ips);
+    const activeFp = cleanBans(adminData.banned_fingerprints);
     
     // Cập nhật lại Firestore sau khi dọn dẹp (non-blocking)
     if (Object.keys(activeIps).length !== Object.keys(adminData.banned_ips || {}).length ||
@@ -679,8 +675,14 @@ app.get('/admin/dictionary', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
   try {
     const snapshot = await db.collection('dictionary').get();
-    const dictionary = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    res.json({ success: true, dictionary });
+    
+    // FIX 2: Đảm bảo dữ liệu là mảng hợp lệ để tránh lỗi client-side .map is not a function
+    const dictionary = snapshot.docs
+      .map(doc => ({ id: doc.id, ...doc.data() }))
+      // Thêm 1 lớp kiểm tra phòng thủ: nếu có document nào bị lỗi nặng, chỉ giữ lại object
+      .filter(item => typeof item === 'object' && item !== null); 
+
+    res.json({ success: true, dictionary: dictionary || [] });
   } catch (error) {
     console.error('Lỗi khi lấy dictionary:', error && error.message ? error.message : error);
     res.status(500).json({ error: 'Lỗi server khi lấy dictionary.' });

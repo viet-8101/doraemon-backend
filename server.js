@@ -54,8 +54,9 @@ const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
 const ADMIN_USERNAME_HASH = process.env.ADMIN_USERNAME_HASH;
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH;
 const JWT_SECRET = process.env.JWT_SECRET;
-const DICTIONARY_MAX_LENGTH = 500;
-const RECAPTCHA_SCORE_THRESHOLD = 0.7; // [SỬA ĐỔI] Ngưỡng điểm reCAPTCHA V3
+const DICTIONARY_MAX_LENGTH = 500; // [PHÒNG THỦ] Giới hạn độ dài key/value để bảo vệ ReDoS
+const RECAPTCHA_SCORE_THRESHOLD = 0.7; // [PHÒNG THỦ] Ngưỡng điểm reCAPTCHA V3
+const RECAPTCHA_EXPECTED_ACTION = 'giai_ma'; // [PHÒNG THỦ] Hành động dự kiến từ client
 
 if (!JWT_SECRET) {
   console.error('Lỗi: JWT_SECRET chưa được đặt trong biến môi trường! Server sẽ không khởi động.');
@@ -148,7 +149,7 @@ function escapeRegExpString(s) {
 }
 
 function buildRegexForKeySafe(key) {
-  // Added: Max length check to prevent potential ReDoS/DoS from extremely long keys
+  // [PHÒNG THỦ] Max length check to prevent potential ReDoS/DoS from extremely long keys
   const keyStr = String(key);
   if (keyStr.length > DICTIONARY_MAX_LENGTH) {
     console.warn('[Regex] Key quá dài, bỏ qua tạo regex:', keyStr.length);
@@ -272,7 +273,7 @@ async function updateAdminData(dataToUpdate) {
 function getClientIp(req) { return (req.headers['x-forwarded-for'] || req.ip).split(',')[0].trim(); }
 function normalizeIp(ip) { return ip && ip.startsWith('::ffff:') ? ip.substring(7) : ip; }
 
-function sanitizeDictionaryInput(input, maxLength = DICTIONARY_MAX_LENGTH) {
+function sanitizeDictionaryInput(input, maxLength = DICTIONARY_MAX_LENGTH) { // [PHÒNG THỦ]
   if (typeof input !== 'string') return '';
   // Trim and limit length. Keeps flexibility for key/value while preventing abuse.
   return input.trim().substring(0, maxLength);
@@ -355,13 +356,17 @@ async function verifyRecaptcha(recaptchaToken, remoteIp, attempts = 2, timeoutMs
       }
       const data = await resp.json();
       
-      // [SỬA ĐỔI] Kiểm tra reCAPTCHA V3: success VÀ score >= threshold
-      const isSuccessful = !!data.success && typeof data.score === 'number' && data.score >= RECAPTCHA_SCORE_THRESHOLD;
+      // [LOGIC PHÒNG THỦ CỐT LÕI] Kiểm tra reCAPTCHA V3 (Score + Action)
+      const isScoreAcceptable = typeof data.score === 'number' && data.score >= RECAPTCHA_SCORE_THRESHOLD;
+      const isActionCorrect = data.action === RECAPTCHA_EXPECTED_ACTION;
+
+      // Thành công tổng thể phải thỏa mãn success, score, VÀ action
+      const isSuccessful = !!data.success && isScoreAcceptable && isActionCorrect;
 
       const ipLog = remoteIp || '<no-ip>';
-      console.log(`${ipLog} - reCAPTCHA success: ${!!data.success}, score: ${data.score || 0}, accepted: ${isSuccessful}`);
+      console.log(`${ipLog} - reCAPTCHA success: ${!!data.success}, score: ${data.score || 0}, action: ${data.action}, accepted: ${isSuccessful}`);
       
-      return { ok: isSuccessful, data, score: data.score };
+      return { ok: isSuccessful, data, score: data.score, action: data.action };
     } catch (err) {
       clearTimeout(timer);
       if (err.name === 'AbortError') {
@@ -389,11 +394,12 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
   const ip = normalizeIp(getClientIp(req));
   if (!userInput || !recaptchaToken) return res.status(400).json({ error: 'Thiếu dữ liệu.' });
 
-  // verify recaptcha (SỬA ĐỔI: Sử dụng logic V3)
+  // verify recaptcha (V3 Logic)
   const recaptchaResult = await verifyRecaptcha(recaptchaToken, ip, 2, 5000);
   
   if (!recaptchaResult.ok) {
     if (!recaptchaResult.data?.success) {
+      // API call failed, token invalid, etc.
       if (recaptchaResult.data && recaptchaResult.data['error-codes']) {
         const codes = recaptchaResult.data['error-codes'];
         if (codes.includes('invalid-input-secret')) {
@@ -401,16 +407,20 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
           return res.status(500).json({ error: 'Lỗi server: Cấu hình reCAPTCHA sai.' });
         }
       }
-      // reCAPTCHA thất bại hoàn toàn (mã không hợp lệ, hết hạn, lỗi mạng)
       await updateAdminData({ total_failed_recaptcha: FieldValue.increment(1) });
-      return res.status(401).json({ error: 'Xác thực reCAPTCHA thất bại.' });
+      return res.status(401).json({ error: 'Xác thực reCAPTCHA thất bại (Token không hợp lệ hoặc hết hạn).' });
     }
     
-    // Nếu reCAPTCHA thành công nhưng điểm số thấp (V3 logic)
-    if (recaptchaResult.data?.success && recaptchaResult.score < RECAPTCHA_SCORE_THRESHOLD) {
+    // Nếu reCAPTCHA success nhưng score/action failed (V3 logic)
+    if (recaptchaResult.score < RECAPTCHA_SCORE_THRESHOLD) {
       console.warn(`[reCAPTCHA] Bị từ chối do điểm số thấp: ${recaptchaResult.score} < ${RECAPTCHA_SCORE_THRESHOLD}`);
       await updateAdminData({ total_failed_recaptcha: FieldValue.increment(1) });
-      return res.status(401).json({ error: `Xác thực reCAPTCHA thất bại (Điểm ${recaptchaResult.score}).` });
+      return res.status(401).json({ error: `Xác thực reCAPTCHA thất bại (Điểm ${recaptchaResult.score} quá thấp).` });
+    }
+    if (recaptchaResult.action !== RECAPTCHA_EXPECTED_ACTION) {
+      console.warn(`[reCAPTCHA] Bị từ chối do action không khớp: ${recaptchaResult.action} != ${RECAPTCHA_EXPECTED_ACTION}`);
+      await updateAdminData({ total_failed_recaptcha: FieldValue.increment(1) });
+      return res.status(401).json({ error: `Xác thực reCAPTCHA thất bại (Action không khớp: ${recaptchaResult.action}).` });
     }
 
     if (recaptchaResult.error === 'network-or-timeout' || recaptchaResult.error === 'http-error') {
@@ -621,7 +631,7 @@ app.post('/admin/dictionary', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
   try {
     const { key, value } = req.body;
-    // [SỬA ĐỔI] Thêm sanitization
+    // [PHÒNG THỦ] Thêm sanitization
     const sanitizedKey = sanitizeDictionaryInput(key);
     const sanitizedValue = sanitizeDictionaryInput(value);
     
@@ -640,7 +650,7 @@ app.put('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { key, value } = req.body;
-    // [SỬA ĐỔI] Thêm sanitization
+    // [PHÒNG THỦ] Thêm sanitization
     const sanitizedKey = sanitizeDictionaryInput(key);
     const sanitizedValue = sanitizeDictionaryInput(value);
 
@@ -692,7 +702,7 @@ app.post('/admin/migrate-dictionary', authenticateAdminToken, async (req, res) =
       let newKey = rawKey;
       let newValue = rawValue;
 
-      // [SỬA ĐỔI] Áp dụng sanitization/limitation cho migration
+      // [PHÒNG THỦ] Áp dụng sanitization/limitation cho migration
       if (typeof rawKey === 'string') {
         newKey = sanitizeDictionaryInput(rawKey);
         if (newKey !== rawKey) update.key = newKey;

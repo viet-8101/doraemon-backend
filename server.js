@@ -54,6 +54,8 @@ const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
 const ADMIN_USERNAME_HASH = process.env.ADMIN_USERNAME_HASH;
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH;
 const JWT_SECRET = process.env.JWT_SECRET;
+const DICTIONARY_MAX_LENGTH = 500;
+const RECAPTCHA_SCORE_THRESHOLD = 0.7; // [SỬA ĐỔI] Ngưỡng điểm reCAPTCHA V3
 
 if (!JWT_SECRET) {
   console.error('Lỗi: JWT_SECRET chưa được đặt trong biến môi trường! Server sẽ không khởi động.');
@@ -146,11 +148,18 @@ function escapeRegExpString(s) {
 }
 
 function buildRegexForKeySafe(key) {
-  const escaped = escapeRegExpString(key);
+  // Added: Max length check to prevent potential ReDoS/DoS from extremely long keys
+  const keyStr = String(key);
+  if (keyStr.length > DICTIONARY_MAX_LENGTH) {
+    console.warn('[Regex] Key quá dài, bỏ qua tạo regex:', keyStr.length);
+    throw new Error('Key length exceeds safety limit.');
+  }
+
+  const escaped = escapeRegExpString(keyStr);
   try {
     return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu');
   } catch (e) {
-    console.warn('[Regex] lookbehind/unicode failed for key, falling back to simple match:', key && String(key).slice(0, 60));
+    console.warn('[Regex] lookbehind/unicode failed for key, falling back to simple match:', keyStr.slice(0, 60));
     return new RegExp(escaped, 'gi');
   }
 }
@@ -174,6 +183,7 @@ async function listenForDictionaryChanges() {
           const regex = buildRegexForKeySafe(keyStr);
           initialEntries.push({ id: doc.id, key: keyStr, value: valueStr, regex });
         } catch (e) {
+          // Will catch the 'Key length exceeds safety limit.' error as well
           console.warn(`[Cache] Bỏ qua doc ${doc.id} do lỗi tạo regex:`, e && e.message ? e.message : e);
         }
       }
@@ -262,6 +272,12 @@ async function updateAdminData(dataToUpdate) {
 function getClientIp(req) { return (req.headers['x-forwarded-for'] || req.ip).split(',')[0].trim(); }
 function normalizeIp(ip) { return ip && ip.startsWith('::ffff:') ? ip.substring(7) : ip; }
 
+function sanitizeDictionaryInput(input, maxLength = DICTIONARY_MAX_LENGTH) {
+  if (typeof input !== 'string') return '';
+  // Trim and limit length. Keeps flexibility for key/value while preventing abuse.
+  return input.trim().substring(0, maxLength);
+}
+
 function sanitizeInput(input) {
   if (typeof input !== 'string') return '';
   let sanitized = input.trim().toLowerCase().substring(0, 200);
@@ -338,10 +354,14 @@ async function verifyRecaptcha(recaptchaToken, remoteIp, attempts = 2, timeoutMs
         return { ok: false, error: 'http-error', status: resp.status, body: text };
       }
       const data = await resp.json();
-      // Changed: replace detailed debug object with only IP + success/failure
+      
+      // [SỬA ĐỔI] Kiểm tra reCAPTCHA V3: success VÀ score >= threshold
+      const isSuccessful = !!data.success && typeof data.score === 'number' && data.score >= RECAPTCHA_SCORE_THRESHOLD;
+
       const ipLog = remoteIp || '<no-ip>';
-      console.log(`${ipLog} - reCAPTCHA ${data && data.success ? 'success' : 'failure'}`);
-      return { ok: !!data.success, data };
+      console.log(`${ipLog} - reCAPTCHA success: ${!!data.success}, score: ${data.score || 0}, accepted: ${isSuccessful}`);
+      
+      return { ok: isSuccessful, data, score: data.score };
     } catch (err) {
       clearTimeout(timer);
       if (err.name === 'AbortError') {
@@ -353,6 +373,7 @@ async function verifyRecaptcha(recaptchaToken, remoteIp, attempts = 2, timeoutMs
       else return { ok: false, error: 'network-or-timeout', err };
     }
   }
+  return { ok: false, error: 'unknown' };
 }
 
 // --- ENDPOINTS ---
@@ -368,22 +389,30 @@ app.post('/giai-ma', securityMiddleware, async (req, res) => {
   const ip = normalizeIp(getClientIp(req));
   if (!userInput || !recaptchaToken) return res.status(400).json({ error: 'Thiếu dữ liệu.' });
 
-  // verify recaptcha
+  // verify recaptcha (SỬA ĐỔI: Sử dụng logic V3)
   const recaptchaResult = await verifyRecaptcha(recaptchaToken, ip, 2, 5000);
+  
   if (!recaptchaResult.ok) {
-    if (recaptchaResult.data && recaptchaResult.data['error-codes']) {
-      const codes = recaptchaResult.data['error-codes'];
-      if (codes.includes('invalid-input-secret')) {
-        console.error('[reCAPTCHA] invalid secret (check env)');
-        return res.status(500).json({ error: 'Lỗi server khi xác thực reCAPTCHA.' });
+    if (!recaptchaResult.data?.success) {
+      if (recaptchaResult.data && recaptchaResult.data['error-codes']) {
+        const codes = recaptchaResult.data['error-codes'];
+        if (codes.includes('invalid-input-secret')) {
+          console.error('[reCAPTCHA] invalid secret (check env)');
+          return res.status(500).json({ error: 'Lỗi server: Cấu hình reCAPTCHA sai.' });
+        }
       }
-      if (codes.includes('invalid-input-response') || codes.includes('timeout-or-duplicate') || codes.includes('missing-input-response')) {
-        await updateAdminData({ total_failed_recaptcha: FieldValue.increment(1) });
-        return res.status(401).json({ error: 'Xác thực reCAPTCHA thất bại.' });
-      }
+      // reCAPTCHA thất bại hoàn toàn (mã không hợp lệ, hết hạn, lỗi mạng)
       await updateAdminData({ total_failed_recaptcha: FieldValue.increment(1) });
       return res.status(401).json({ error: 'Xác thực reCAPTCHA thất bại.' });
     }
+    
+    // Nếu reCAPTCHA thành công nhưng điểm số thấp (V3 logic)
+    if (recaptchaResult.data?.success && recaptchaResult.score < RECAPTCHA_SCORE_THRESHOLD) {
+      console.warn(`[reCAPTCHA] Bị từ chối do điểm số thấp: ${recaptchaResult.score} < ${RECAPTCHA_SCORE_THRESHOLD}`);
+      await updateAdminData({ total_failed_recaptcha: FieldValue.increment(1) });
+      return res.status(401).json({ error: `Xác thực reCAPTCHA thất bại (Điểm ${recaptchaResult.score}).` });
+    }
+
     if (recaptchaResult.error === 'network-or-timeout' || recaptchaResult.error === 'http-error') {
       console.error('[reCAPTCHA] transient verify failure:', recaptchaResult);
       return res.status(500).json({ error: 'Lỗi khi xác thực reCAPTCHA.' });
@@ -592,9 +621,15 @@ app.post('/admin/dictionary', authenticateAdminToken, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Dịch vụ Firestore chưa sẵn sàng.' });
   try {
     const { key, value } = req.body;
-    if (!key || !value) return res.status(400).json({ error: 'Thiếu key hoặc value.' });
-    const docRef = await db.collection('dictionary').add({ key, value });
-    res.status(201).json({ id: docRef.id, key, value });
+    // [SỬA ĐỔI] Thêm sanitization
+    const sanitizedKey = sanitizeDictionaryInput(key);
+    const sanitizedValue = sanitizeDictionaryInput(value);
+    
+    if (!sanitizedKey || !sanitizedValue) return res.status(400).json({ error: 'Thiếu key hoặc value hợp lệ.' });
+    if (sanitizedKey.length === 0 || sanitizedValue.length === 0) return res.status(400).json({ error: 'Key hoặc value không được để trống sau khi làm sạch.' });
+
+    const docRef = await db.collection('dictionary').add({ key: sanitizedKey, value: sanitizedValue });
+    res.status(201).json({ id: docRef.id, key: sanitizedKey, value: sanitizedValue });
   } catch (error) {
     res.status(500).json({ error: 'Lỗi khi thêm từ mới.' });
   }
@@ -605,8 +640,14 @@ app.put('/admin/dictionary/:id', authenticateAdminToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { key, value } = req.body;
-    if (!key || !value) return res.status(400).json({ error: 'Thiếu key hoặc value.' });
-    await db.collection('dictionary').doc(id).update({ key, value });
+    // [SỬA ĐỔI] Thêm sanitization
+    const sanitizedKey = sanitizeDictionaryInput(key);
+    const sanitizedValue = sanitizeDictionaryInput(value);
+
+    if (!sanitizedKey || !sanitizedValue) return res.status(400).json({ error: 'Thiếu key hoặc value hợp lệ.' });
+    if (sanitizedKey.length === 0 || sanitizedValue.length === 0) return res.status(400).json({ error: 'Key hoặc value không được để trống sau khi làm sạch.' });
+
+    await db.collection('dictionary').doc(id).update({ key: sanitizedKey, value: sanitizedValue });
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Lỗi khi cập nhật từ.' });
@@ -645,11 +686,29 @@ app.post('/admin/migrate-dictionary', authenticateAdminToken, async (req, res) =
       }
 
       const update = {};
-      if (!hasKey) update.key = String(doc.id);
-      else if (typeof data.key !== 'string') update.key = typeof data.key === 'object' ? JSON.stringify(data.key) : String(data.key);
-      if (!hasValue) update.value = '';
-      else if (typeof data.value !== 'string') update.value = typeof data.value === 'object' ? JSON.stringify(data.value) : String(data.value);
+      
+      const rawKey = data.key;
+      const rawValue = data.value;
+      let newKey = rawKey;
+      let newValue = rawValue;
 
+      // [SỬA ĐỔI] Áp dụng sanitization/limitation cho migration
+      if (typeof rawKey === 'string') {
+        newKey = sanitizeDictionaryInput(rawKey);
+        if (newKey !== rawKey) update.key = newKey;
+      }
+      if (typeof rawValue === 'string') {
+        newValue = sanitizeDictionaryInput(rawValue);
+        if (newValue !== rawValue) update.value = newValue;
+      }
+
+      if (!hasKey || typeof rawKey !== 'string') {
+          update.key = sanitizeDictionaryInput(String(doc.id));
+      }
+      if (!hasValue || typeof rawValue !== 'string') {
+          update.value = '';
+      }
+      // Re-check update keys after basic sanitization
       if (Object.keys(update).length > 0) {
         await db.collection('dictionary').doc(doc.id).update(update);
         updated++;

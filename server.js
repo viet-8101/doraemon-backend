@@ -55,7 +55,7 @@ const ADMIN_USERNAME_HASH = process.env.ADMIN_USERNAME_HASH;
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH;
 const JWT_SECRET = process.env.JWT_SECRET;
 const DICTIONARY_MAX_LENGTH = 500; // [PHÒNG THỦ] Giới hạn độ dài key/value để bảo vệ ReDoS
-const RECAPTCHA_SCORE_THRESHOLD = 0.7; // [PHÒNG THỦ] Ngưỡng điểm reCAPTCHA V3
+const RECAPTCHA_SCORE_THRESHOLD = 0.75; // [PHÒNG THỦ] Ngưỡng điểm reCAPTCHA V3
 const RECAPTCHA_EXPECTED_ACTION = 'giai_ma'; // [PHÒNG THỦ] Hành động dự kiến từ client
 
 if (!JWT_SECRET) {
@@ -357,7 +357,7 @@ async function verifyRecaptcha(recaptchaToken, remoteIp, attempts = 2, timeoutMs
       const data = await resp.json();
       
       // [LOGIC PHÒNG THỦ CỐT LÕI] Kiểm tra reCAPTCHA V3 (Score + Action)
-      const isScoreAcceptable = typeof data.score === 'number' && data.score >= RECAPTCHA_SCORE_THRESHOLD;
+      const isScoreAcceptable = typeof data.score === 'number' && data.score > RECAPTCHA_SCORE_THRESHOLD;
       const isActionCorrect = data.action === RECAPTCHA_EXPECTED_ACTION;
 
       // Thành công tổng thể phải thỏa mãn success, score, VÀ action
@@ -752,3 +752,4 @@ app.listen(PORT, '0.0.0.0', () => {
     console.warn('[Bootstrap] Firebase không sẵn sàng — bạn có thể kiểm tra FIREBASE_SERVICE_ACCOUNT_KEY trong env.');
   }
 })();
+

@@ -323,12 +323,21 @@ async function securityMiddleware(req, res, next) {
   next();
 }
 
+/**
+ * Middleware xác thực Admin Token.
+ * ĐÃ FIX: Bao gồm trường dictionary: [] trong phản hồi lỗi nếu đây là yêu cầu dictionary.
+ */
 function authenticateAdminToken(req, res, next) {
   const token = req.cookies.adminToken;
-  if (!token) return res.status(401).json({ error: 'Truy cập bị từ chối. Vui lòng đăng nhập.' });
+  
+  // KIỂM TRA ĐÂY CÓ PHẢI LÀ YÊU CẦU DICTIONARY HAY KHÔNG
+  const isDictionaryEndpoint = req.path === '/admin/dictionary'; 
+  const dictionarySafeFail = isDictionaryEndpoint ? { dictionary: [] } : {}; // Nếu là dictionary, thêm dictionary: []
+
+  if (!token) return res.status(401).json({ error: 'Truy cập bị từ chối. Vui lòng đăng nhập.', ...dictionarySafeFail });
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ error: 'Token không hợp lệ hoặc đã hết hạn.' });
+    if (err) return res.status(403).json({ error: 'Token không hợp lệ hoặc đã hết hạn.', ...dictionarySafeFail });
     req.user = user;
     next();
   });

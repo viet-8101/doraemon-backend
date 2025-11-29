@@ -32,6 +32,7 @@ app.use(cors({
     'https://viet-8101.github.io/admin-dashboard-doraemon/',
     'http://localhost:5173',
     'https://admin-dashboard-doraemon.onrender.com',
+    'https://giai-ma-doraemon.onrender.com',
   ],
   credentials: true,
 }));
@@ -879,3 +880,4 @@ app.listen(PORT, '0.0.0.0', () => {
     console.warn('[Bootstrap] Firebase không sẵn sàng — bạn có thể kiểm tra FIREBASE_SERVICE_ACCOUNT_KEY trong env.');
   }
 })();
+

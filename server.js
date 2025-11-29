@@ -1,8 +1,8 @@
-// server.js (Node.js/Express Backend - ĐÃ XÓA RATE LIMITING VÀ BAN SYSTEM)
+// server.js (Node.js/Express Backend - ĐÃ PHỤC HỒI BAN SYSTEM, RECAPTCHA VÀ XÓA RATE LIMIT)
 
 import express from 'express';
 import cors from 'cors';
-import fetch from 'node-fetch'; // Vẫn giữ lại cho reCAPTCHA check nếu cần sau này, nhưng hiện tại không dùng
+import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
@@ -12,7 +12,7 @@ import bcrypt from 'bcryptjs';
 
 import admin from 'firebase-admin';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-// ĐÃ XÓA: import { RateLimiterMemory } from 'rate-limiter-flexible'; 
+// ĐÃ XÓA: import { RateLimiterMemory } from 'rate-limiter-flexible'; // Chỉ loại bỏ Rate Limiter
 
 dotenv.config();
 
@@ -33,17 +33,18 @@ app.use(cors({
   origin: [
     'https://viet-8101.github.io',
     'https://viet-8101.github.io/admin-dashboard-doraemon/',
-    'http://localhost:5173', 
-    process.env.FRONTEND_URL || 'https://admin-dashboard-doraemon.onrender.com', 
+    'http://localhost:5173', // Dev environment for React Admin
+    process.env.FRONTEND_URL || 'https://admin-dashboard-doraemon.onrender.com', // Cấu hình linh hoạt
   ],
   credentials: true,
 }));
 app.use(express.json());
 app.use(cookieParser());
-app.set('trust proxy', 1); // Vẫn giữ để đọc IP chính xác nếu cần
+// Kích hoạt trust proxy để đọc IP chính xác khi chạy sau load balancer
+app.set('trust proxy', 1);
 
 // --- CONFIG VARS & CONSTANTS ---
-const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY; // Vẫn giữ nếu muốn bật lại reCAPTCHA sau này
+const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY;
 // ADMIN_HASHES: { username: bcrypt_hashed_password } 
 const ADMIN_HASHES = process.env.ADMIN_HASHES ? JSON.parse(process.env.ADMIN_HASHES) : {}; 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -51,14 +52,15 @@ const JWT_EXPIRES_IN = '1d';
 const TOTP_SECRET = process.env.TOTP_SECRET; // Bí mật 2FA (TOTP)
 const FIREBASE_ADMIN_CREDENTIALS = process.env.FIREBASE_ADMIN_CREDENTIALS;
 
-// ĐÃ XÓA: Hằng số cấm vĩnh viễn PERMANENT_BAN_VALUE
+// SỬA LỖI: Hằng số cấm vĩnh viễn (dùng max safe integer)
+const PERMANENT_BAN_VALUE = 9007199254740991; 
 
 if (!JWT_SECRET) {
   console.error("LỖI CẤU HÌNH: JWT_SECRET không được thiết lập trong biến môi trường.");
   process.exit(1);
 }
 
-// --- IP/FINGERPRINT UTILS (Vẫn giữ để có thể log hoặc dùng nếu cần) ---
+// --- IP/FINGERPRINT UTILS (ĐÃ SỬA) ---
 
 /**
  * Chuẩn hóa địa chỉ IP (xử lý IPv4-mapped IPv6)
@@ -71,7 +73,7 @@ function normalizeIp(ip) {
 }
 
 /**
- * Lấy địa chỉ IP đã chuẩn hóa của client từ request
+ * Lấy địa chỉ IP đã chuẩn hóa của client từ request (hỗ trợ trust proxy)
  */
 function getClientIp(req) {
   const forwarded = req.headers['x-forwarded-for'];
@@ -84,7 +86,8 @@ function getClientIp(req) {
 // --- FIREBASE INIT, CACHE & LISTENER ---
 let firebaseAdminInitialized = false;
 let db;
-// ĐÃ XÓA: Cache BANNED_CACHE
+// Cache: pIps (Permanent IPs), tIps (Temporary IPs), pFps, tFps
+let BANNED_CACHE = { pIps: {}, tIps: {}, pFps: {}, tFps: {} };
 let DICTIONARY_CACHE = {};
 
 const initializeFirebase = () => {
@@ -131,9 +134,41 @@ const loadDictionary = async () => {
   } catch (err) { console.error("Lỗi khi tải từ điển:", err); }
 };
 
-// ĐÃ XÓA: Hàm loadBans
+// Tải lại dữ liệu Cấm (Bans) từ Firestore vào Cache và dọn dẹp các mục hết hạn
+const loadBans = async () => {
+  if (!firebaseAdminInitialized) return;
+  try {
+    const snapshot = await db.collection('bans').get();
+    const newBans = { pIps: {}, tIps: {}, pFps: {}, tFps: {} };
+    const now = Date.now();
+    const batch = db.batch();
+    let expiredCount = 0;
 
-// ĐÃ XÓA: Cấu hình Rate Limiter
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      const id = doc.id; 
+      const type = data.type === 'ip' ? 'Ip' : 'Fp';
+      const isPermanent = data.expiry === PERMANENT_BAN_VALUE;
+
+      if (!isPermanent && data.expiry < now) {
+        batch.delete(db.collection('bans').doc(id));
+        expiredCount++;
+      } else {
+        const key = `${isPermanent ? 'p' : 't'}${type}s`;
+        newBans[key][data.value] = data.expiry;
+      }
+    });
+
+    if (expiredCount > 0) {
+      await batch.commit();
+      console.log(`Đã xóa ${expiredCount} mục cấm hết hạn.`);
+    }
+
+    BANNED_CACHE = newBans;
+  } catch (err) { console.error("Lỗi khi tải dữ liệu cấm:", err); }
+};
+
+// ĐÃ XÓA: Cấu hình Rate Limiter (bởi vì bạn không cần)
 
 // --- HELPER FUNCTIONS ---
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -158,13 +193,49 @@ const decodeMessage = (text) => {
 
 // --- MIDDLEWARE ---
 
-// ĐÃ XÓA: Hàm isBanned
+const isBanned = (ip, fp) => {
+    const now = Date.now();
+    // Kiểm tra cấm IP
+    if (BANNED_CACHE.pIps[ip] || (BANNED_CACHE.tIps[ip] && BANNED_CACHE.tIps[ip] > now)) return true;
+    // Kiểm tra cấm Fingerprint
+    if (BANNED_CACHE.pFps[fp] || (BANNED_CACHE.tFps[fp] && BANNED_CACHE.tFps[fp] > now)) return true;
+    return false;
+};
 
 /**
- * ĐÃ XÓA: securityMiddleware
+ * Middleware bảo mật chung (Ban Check, ReCaptcha check)
+ * Rate Limit đã bị loại bỏ
  */
-// const securityMiddleware = async (req, res, next) => { ... next(); }; 
+const securityMiddleware = async (req, res, next) => {
+    const clientIp = getClientIp(req);
+    const clientFingerprint = req.headers['x-client-fingerprint'] || req.body.fingerprintId || 'no_fp_provided';
+    
+    // 1. Kiểm tra Cấm IP/Fingerprint
+    if (isBanned(clientIp, clientFingerprint)) {
+        return res.status(403).json({ error: "Địa chỉ IP hoặc Fingerprint của bạn đã bị cấm truy cập hệ thống." });
+    }
 
+    // 2. Kiểm tra reCAPTCHA (Chỉ bắt buộc cho route giải mã)
+    if (req.path === '/giai-ma') {
+        const captchaToken = req.body.recaptchaToken;
+        if (!captchaToken) return res.status(400).json({ error: "Thiếu reCAPTCHA token." });
+
+        try {
+            const captchaVerifyUrl = `https://www.google.com/recaptcha/api/siteverify?secret=${RECAPTCHA_SECRET_KEY}&response=${captchaToken}&remoteip=${clientIp}`;
+            const captchaResponse = await fetch(captchaVerifyUrl, { method: 'POST' });
+            const captchaData = await captchaResponse.json();
+
+            if (!captchaData.success || captchaData.score < 0.5) { 
+                return res.status(403).json({ error: "Xác thực reCAPTCHA thất bại. Vui lòng thử lại hoặc đảm bảo bạn không phải là bot." });
+            }
+        } catch (error) {
+            console.error("Lỗi xác thực reCAPTCHA:", error);
+            return res.status(500).json({ error: "Lỗi nội bộ khi xác thực reCAPTCHA." });
+        }
+    }
+
+    next();
+};
 
 /**
  * Middleware kiểm tra quyền Admin
@@ -229,9 +300,9 @@ app.get('/check', (req, res) => {
 });
 
 /**
- * Route Giải Mã Mật Thư (Không áp dụng bảo mật)
+ * Route Giải Mã Mật Thư (áp dụng bảo mật Ban Check và ReCaptcha)
  */
-app.post('/giai-ma', (req, res) => { // ĐÃ XÓA: securityMiddleware
+app.post('/giai-ma', securityMiddleware, (req, res) => {
     const { encodedText } = req.body;
     
     if (!encodedText || typeof encodedText !== 'string' || encodedText.length > 5000) {
@@ -258,7 +329,7 @@ app.post('/giai-ma', (req, res) => { // ĐÃ XÓA: securityMiddleware
  */
 app.post('/admin/login', require2FA, async (req, res) => {
     const { password } = req.body;
-    const adminHash = Object.values(ADMIN_HASHES)[0]; 
+    const adminHash = Object.values(ADMIN_HASHES)[0]; // Lấy hash admin đầu tiên
 
     if (!adminHash || !password) {
         return res.status(400).json({ error: "Thiếu thông tin đăng nhập." });
@@ -273,7 +344,7 @@ app.post('/admin/login', require2FA, async (req, res) => {
                 httpOnly: true,
                 secure: process.env.NODE_ENV === 'production', 
                 sameSite: 'Lax',
-                maxAge: 24 * 60 * 60 * 1000 
+                maxAge: 24 * 60 * 60 * 1000 // 1 ngày
             });
             return res.json({ success: true, message: 'Đăng nhập thành công!' });
         } else {
@@ -300,7 +371,73 @@ app.get('/admin/me', requireAdmin, (req, res) => {
 });
 
 // --- ADMIN: BAN MANAGEMENT ---
-// ĐÃ XÓA: Các route quản lý cấm (/admin/banned, /admin/ban, /admin/unban)
+
+/**
+ * Lấy danh sách IP/FP bị cấm
+ */
+app.get('/admin/banned', requireAdmin, (req, res) => {
+    res.json(BANNED_CACHE);
+});
+
+/**
+ * Thực hiện Cấm (Ban)
+ */
+app.post('/admin/ban', requireAdmin, async (req, res) => {
+    const { type, value, duration } = req.body;
+    if (!['ip', 'fingerprint'].includes(type) || !value || typeof value !== 'string' || !firebaseAdminInitialized) {
+        return res.status(400).json({ error: 'Dữ liệu không hợp lệ hoặc database chưa sẵn sàng.' });
+    }
+
+    const docId = `${type}_${value.trim()}`;
+    let expiry = PERMANENT_BAN_VALUE; 
+
+    if (duration !== 'permanent') {
+        const msDuration = parseInt(duration, 10);
+        if (isNaN(msDuration) || msDuration <= 0) {
+            return res.status(400).json({ error: 'Thời lượng cấm không hợp lệ.' });
+        }
+        expiry = Date.now() + msDuration;
+    }
+
+    try {
+        await db.collection('bans').doc(docId).set({
+            type: type,
+            value: value.trim(),
+            expiry: expiry,
+            admin: req.user.username || 'admin',
+            timestamp: FieldValue.serverTimestamp()
+        }, { merge: true });
+
+        await loadBans();
+        res.json({ success: true, message: `Đã cấm ${type} ${value.trim()} thành công.` });
+    } catch (err) {
+        res.status(500).json({ error: 'Lỗi server khi thực hiện cấm.' });
+    }
+});
+
+/**
+ * Thực hiện Gỡ Cấm (Unban)
+ */
+app.post('/admin/unban', requireAdmin, async (req, res) => {
+    const { type, value } = req.body;
+
+    if (!['ip', 'fingerprint'].includes(type) || !value || typeof value !== 'string' || !firebaseAdminInitialized) {
+        return res.status(400).json({ error: 'Dữ liệu không hợp lệ hoặc database chưa sẵn sàng.' });
+    }
+
+    const docId = `${type}_${value.trim()}`;
+
+    try {
+        await db.collection('bans').doc(docId).delete();
+
+        await loadBans();
+        res.json({ success: true, message: `Đã gỡ cấm ${type} ${value.trim()} thành công.` });
+    } catch (err) {
+        res.status(500).json({ error: 'Lỗi server khi thực hiện gỡ cấm.' });
+    }
+});
+
+
 // --- ADMIN: DICTIONARY MANAGEMENT (CRUD) ---
 
 /**
@@ -394,8 +531,10 @@ app.listen(PORT, '0.0.0.0', () => {
   const ok = await initializeFirebaseWithRetries();
   if (ok && firebaseAdminInitialized) {
     await loadDictionary();
-    
+    await loadBans();
+    
     // Đặt lịch tải lại cache định kỳ
     setInterval(loadDictionary, 5 * 60 * 1000); // 5 phút
+    setInterval(loadBans, 1 * 60 * 1000); // 1 phút
   }
 })();

@@ -53,10 +53,10 @@ async function initializeFirebaseWithRetries(retries = 5, delay = 5000) {
     if (firebaseAdminInitialized) return true;
 
     // Lấy biến môi trường Base64 mới
-    const serviceAccountKeyBase64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
+    const serviceAccountKeyBase64 = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
 
     if (!serviceAccountKeyBase64) {
-        console.error('LỖI CẤU HÌNH: Thiếu biến môi trường FIREBASE_SERVICE_ACCOUNT_BASE64.');
+        console.error('LỖI CẤU HÌNH: Thiếu biến môi trường FIREBASE_SERVICE_ACCOUNT_KEY.');
         return false;
     }
 
@@ -427,3 +427,4 @@ app.listen(PORT, '0.0.0.0', () => {
     await loadDictionary();
   }
 })();
+

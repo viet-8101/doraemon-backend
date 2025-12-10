@@ -15,6 +15,7 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 dotenv.config();
 
 // --- BIẾN MÔI TRƯỜNG & CONFIG CHUNG (ĐÃ THÊM) ---
+// Xác định môi trường để cấu hình cookie (sửa lỗi đăng nhập)
 const isProduction = process.env.NODE_ENV === 'production';
 let firebaseAdminInitialized = false;
 let db;
@@ -48,11 +49,11 @@ app.set('trust proxy', 1);
 // --- HÀM HỖ TRỢ ---
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- HÀM KHỞI TẠO FIREBASE ADMIN SDK (FIXED) ---
+// --- HÀM KHỞI TẠO FIREBASE ADMIN SDK (FIX TRIỆT ĐỂ LỖI JSON PARSE) ---
 async function initializeFirebaseWithRetries(retries = 5, delay = 5000) {
     if (firebaseAdminInitialized) return true;
 
-    // Lấy biến môi trường. Đảm bảo tên biến này khớp với tên bạn đặt trên Render/Deploy.
+    // Lấy biến môi trường
     const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
 
     if (!serviceAccountKey) {
@@ -62,8 +63,15 @@ async function initializeFirebaseWithRetries(retries = 5, delay = 5000) {
 
     for (let i = 0; i < retries; i++) {
         try {
-            // FIX LỖI 1: Xử lý ký tự xuống dòng (\n) và khoảng trắng thừa, giúp parse JSON ổn định
-            const cleanedKey = serviceAccountKey.replace(/\\n/g, '\n').trim();
+            let cleanedKey = serviceAccountKey.trim();
+
+            // FIX LỖI JSON PARSE:
+            // Khi dán JSON đã được thoát (escaped) vào biến môi trường (ví dụ: private_key có \\n), 
+            // chúng ta cần thay thế chuỗi '\\n' thành ký tự xuống dòng thực tế '\n'
+            // để Firebase Admin SDK có thể đọc đúng.
+            // Phương pháp này loại bỏ lỗi "Bad control character in string literal"
+            cleanedKey = cleanedKey.replace(/\\n/g, '\n');
+            
             const serviceAccount = JSON.parse(cleanedKey);
 
             admin.initializeApp({
@@ -140,6 +148,7 @@ app.get('/admin/verify-session', verifyAdminToken, (req, res) => {
 // Route giải mã chính
 app.post('/giai-ma', async (req, res) => {
   if (!firebaseAdminInitialized) {
+    // Lỗi này sẽ được khắc phục sau khi Firebase khởi tạo thành công
     return res.status(503).json({ error: 'Từ điển chưa sẵn sàng. Vui lòng đợi.' });
   }
   
@@ -159,7 +168,7 @@ app.post('/giai-ma', async (req, res) => {
 
 // --- ROUTES ADMIN ---
 
-// Route đăng nhập (ĐÃ FIX LỖI 2: CẤU HÌNH COOKIE)
+// Route đăng nhập (FIXED: CẤU HÌNH COOKIE)
 app.post('/admin/tfa-login', async (req, res) => {
   const { username, password, tfaCode } = req.body;
   
@@ -206,19 +215,162 @@ app.post('/admin/tfa-login', async (req, res) => {
   return res.json({ success: true, message: 'Đăng nhập thành công' });
 });
 
-// ... (Các route /admin/get-dashboard-data, /admin/ban-ip, v.v. giữ nguyên) ...
+// Route lấy dữ liệu dashboard (cần xác thực)
+app.get('/admin/get-dashboard-data', verifyAdminToken, async (req, res) => {
+  if (!firebaseAdminInitialized) return res.status(503).json({ error: 'Dịch vụ chưa sẵn sàng.' });
+  
+  try {
+    const banListSnapshot = await db.collection('banList').get();
+    const bannedIps = [];
+    const bannedFps = [];
+    
+    banListSnapshot.forEach(doc => {
+      const data = doc.data();
+      if (data.type === 'ip') {
+        bannedIps.push({ id: doc.id, ...data });
+      } else if (data.type === 'fingerprint') {
+        bannedFps.push({ id: doc.id, ...data });
+      }
+    });
 
-// --- BOOTSTRAP ---\r\n
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server Backend Doraemon đang chạy tại cổng ${PORT}`);
-  if (!firebaseAdminInitialized) console.warn('CẢNH BÁO: Firestore chưa được khởi tạo (đang chờ).');
+    const tIps = bannedIps.filter(item => item.isTemp && item.expiresAt > Date.now());
+    const pIps = bannedIps.filter(item => !item.isTemp || item.expiresAt <= Date.now());
+    
+    const tFps = bannedFps.filter(item => item.isTemp && item.expiresAt > Date.now());
+    const pFps = bannedFps.filter(item => !item.isTemp || item.expiresAt <= Date.now());
+
+    return res.json({ success: true, banned: { tIps, pIps, tFps, pFps } });
+  } catch (err) {
+    console.error('/admin/get-dashboard-data error:', err.message);
+    return res.status(500).json({ error: 'Lỗi khi tải dữ liệu dashboard.' });
+  }
 });
 
-// init firebase & start listener in background
-(async () => {
-  const ok = await initializeFirebaseWithRetries();
-  if (ok && firebaseAdminInitialized) {
-    // Tải từ điển ngay sau khi Firebase khởi tạo
-    await loadDictionary();
+// Route cấm IP/Fingerprint (cần xác thực)
+app.post('/admin/ban-entity', verifyAdminToken, async (req, res) => {
+  if (!firebaseAdminInitialized) return res.status(503).json({ error: 'Dịch vụ chưa sẵn sàng.' });
+  
+  const { type, value, duration } = req.body; // type: 'ip' hoặc 'fingerprint', duration: số giờ (ví dụ: 24)
+
+  if (!type || !value) {
+    return res.status(400).json({ error: 'Thiếu dữ liệu.' });
   }
-})();
+
+  const isTemp = !!duration;
+  let expiresAt = null;
+
+  if (isTemp) {
+    const durationMs = duration * 60 * 60 * 1000;
+    expiresAt = Date.now() + durationMs;
+  }
+
+  try {
+    await db.collection('banList').add({
+      type,
+      value,
+      isTemp,
+      expiresAt: expiresAt,
+      timestamp: FieldValue.serverTimestamp(),
+    });
+    return res.json({ success: true, message: `${type.toUpperCase()} ${value} đã bị cấm ${isTemp ? 'tạm thời' : 'vĩnh viễn'}.` });
+  } catch (err) {
+    console.error('/admin/ban-entity error:', err.message);
+    return res.status(500).json({ error: 'Lỗi khi cấm.' });
+  }
+});
+
+// Route bỏ cấm (cần xác thực)
+app.post('/admin/unban-entity', verifyAdminToken, async (req, res) => {
+  if (!firebaseAdminInitialized) return res.status(503).json({ error: 'Dịch vụ chưa sẵn sàng.' });
+  
+  const { id } = req.body;
+  if (!id) return res.status(400).json({ error: 'Thiếu ID.' });
+
+  try {
+    await db.collection('banList').doc(id).delete();
+    return res.json({ success: true, message: 'Đã bỏ cấm thành công.' });
+  } catch (err) {
+    console.error('/admin/unban-entity error:', err.message);
+    return res.status(500).json({ error: 'Lỗi khi bỏ cấm.' });
+  }
+});
+
+// Route đồng bộ từ điển (cần xác thực)
+app.post('/admin/sync-dictionary', verifyAdminToken, async (req, res) => {
+  if (!firebaseAdminInitialized) return res.status(503).json({ error: 'Dịch vụ chưa sẵn sàng.' });
+  
+  try {
+    await loadDictionary();
+    return res.json({ success: true, message: 'Đã đồng bộ từ điển thành công.' });
+  } catch (err) {
+    console.error('/admin/sync-dictionary error:', err.message);
+    return res.status(500).json({ error: 'Lỗi khi đồng bộ từ điển.' });
+  }
+});
+
+// Route lấy từ điển để chỉnh sửa (cần xác thực)
+app.get('/admin/get-dictionary', verifyAdminToken, async (req, res) => {
+    if (!firebaseAdminInitialized) return res.status(503).json({ error: 'Dịch vụ chưa sẵn sàng.' });
+    
+    try {
+        const snapshot = await db.collection('dictionary').get();
+        const dictionaryArray = [];
+        snapshot.forEach(doc => {
+            dictionaryArray.push({ id: doc.id, ...doc.data() });
+        });
+        return res.json({ success: true, dictionary: dictionaryArray });
+    } catch (err) {
+        console.error('/admin/get-dictionary error:', err.message);
+        return res.status(500).json({ error: 'Lỗi khi lấy từ điển.' });
+    }
+});
+
+// Route chỉnh sửa/thêm/xóa từ điển (cần xác thực)
+app.post('/admin/manage-dictionary', verifyAdminToken, async (req, res) => {
+    if (!firebaseAdminInitialized) return res.status(503).json({ error: 'Dịch vụ chưa sẵn sàng.' });
+    
+    const { action, id, key, value } = req.body;
+
+    if (action === 'delete') {
+        if (!id) return res.status(400).json({ error: 'Thiếu ID để xóa.' });
+        try {
+            await db.collection('dictionary').doc(id).delete();
+            return res.json({ success: true, message: 'Đã xóa mục từ điển.' });
+        } catch (err) {
+            console.error('/admin/manage-dictionary delete error:', err.message);
+            return res.status(500).json({ error: 'Lỗi khi xóa.' });
+        }
+    } else if (action === 'add' || action === 'update') {
+        if (!key || typeof value === 'undefined') return res.status(400).json({ error: 'Thiếu Key hoặc Value.' });
+        
+        try {
+            const data = { key: String(key), value: String(value) };
+            if (action === 'add') {
+                const docRef = await db.collection('dictionary').add(data);
+                return res.json({ success: true, message: 'Đã thêm mục từ điển.', newId: docRef.id });
+            } else if (action === 'update') {
+                if (!id) return res.status(400).json({ error: 'Thiếu ID để cập nhật.' });
+                await db.collection('dictionary').doc(id).set(data);
+                return res.json({ success: true, message: 'Đã cập nhật mục từ điển.' });
+            }
+        } catch (err) {
+            console.error('/admin/manage-dictionary add/update error:', err.message);
+            return res.status(500).json({ error: 'Lỗi khi quản lý từ điển.' });
+        }
+    } else {
+        return res.status(400).json({ error: 'Hành động không hợp lệ.' });
+    }
+});
+
+// Route migrate dictionary (giữ nguyên code gốc)
+app.post('/admin/migrate-dictionary', verifyAdminToken, async (req, res) => {
+  if (!firebaseAdminInitialized) return res.status(503).json({ error: 'Dịch vụ chưa sẵn sàng.' });
+  
+  const { data: migrationData } = req.body;
+  if (!Array.isArray(migrationData)) {
+    return res.status(400).json({ error: 'Dữ liệu migration phải là một mảng.' });
+  }
+
+  try {
+    let updated = 0;
+    let removed =

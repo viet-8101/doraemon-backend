@@ -373,4 +373,54 @@ app.post('/admin/migrate-dictionary', verifyAdminToken, async (req, res) => {
 
   try {
     let updated = 0;
-    let removed =
+    let removed = 0;
+    let processed = 0;
+    
+    for (const data of migrationData) {
+      processed++;
+      if (!data.id) continue; // Bỏ qua nếu không có ID
+      
+      const doc = await db.collection('dictionary').doc(data.id).get();
+      if (!doc.exists) continue; // Bỏ qua nếu không tồn tại
+      
+      const hasValue = typeof data.value !== 'undefined' && data.value !== null;
+      
+      if (data.remove) {
+        await db.collection('dictionary').doc(doc.id).delete();
+        removed++;
+        continue;
+      }
+      
+      const update = {};
+      if (typeof data.key !== 'string') update.key = typeof data.key === 'object' ? JSON.stringify(data.key) : String(data.key);
+      if (!hasValue) update.value = '';
+      else if (typeof data.value !== 'string') update.value = typeof data.value === 'object' ? JSON.stringify(data.value) : String(data.value);
+
+      if (Object.keys(update).length > 0) {
+        await db.collection('dictionary').doc(doc.id).update(update);
+        updated++;
+      }
+
+      if (processed % 200 === 0) await sleep(300);
+    }
+    return res.json({ success: true, updated, removed, totalProcessed: processed });
+  } catch (err) {
+    console.error('/admin/migrate-dictionary error', err && err.message ? err.message : err);
+    return res.status(500).json({ error: 'Lỗi khi migrate dictionary.' });
+  }
+});
+
+// --- BOOTSTRAP ---
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server Backend Doraemon đang chạy tại cổng ${PORT}`);
+  if (!firebaseAdminInitialized) console.warn('CẢNH BÁO: Firestore chưa được khởi tạo (đang chờ).');
+});
+
+// init firebase & start listener in background
+(async () => {
+  const ok = await initializeFirebaseWithRetries();
+  if (ok && firebaseAdminInitialized) {
+    // Tải từ điển ngay sau khi Firebase khởi tạo
+    await loadDictionary();
+  }
+})();

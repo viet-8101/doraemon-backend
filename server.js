@@ -15,7 +15,6 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 dotenv.config();
 
 // --- BIẾN MÔI TRƯỜNG & CONFIG CHUNG (ĐÃ THÊM) ---
-// Xác định môi trường để cấu hình cookie (sửa lỗi đăng nhập)
 const isProduction = process.env.NODE_ENV === 'production';
 let firebaseAdminInitialized = false;
 let db;
@@ -49,30 +48,34 @@ app.set('trust proxy', 1);
 // --- HÀM HỖ TRỢ ---
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- HÀM KHỞI TẠO FIREBASE ADMIN SDK (FIX TRIỆT ĐỂ LỖI JSON PARSE) ---
+// --- HÀM KHỞI TẠO FIREBASE ADMIN SDK (FIX TRIỆT ĐỂ BẰNG BASE64) ---
 async function initializeFirebaseWithRetries(retries = 5, delay = 5000) {
     if (firebaseAdminInitialized) return true;
 
-    // Lấy biến môi trường
-    const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    // Lấy biến môi trường Base64 mới
+    const serviceAccountKeyBase64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
 
-    if (!serviceAccountKey) {
-        console.error('LỖI CẤU HÌNH: Thiếu biến môi trường FIREBASE_SERVICE_ACCOUNT_KEY.');
+    if (!serviceAccountKeyBase64) {
+        console.error('LỖI CẤU HÌNH: Thiếu biến môi trường FIREBASE_SERVICE_ACCOUNT_BASE64.');
+        return false;
+    }
+
+    let serviceAccountJsonString;
+    try {
+        // FIX LỖI JSON PARSE: Giải mã Base64 trước khi parse JSON
+        const decodedBuffer = Buffer.from(serviceAccountKeyBase64, 'base64');
+        serviceAccountJsonString = decodedBuffer.toString('utf8');
+        console.log('✅ Đã giải mã Base64 thành công.');
+
+    } catch (error) {
+        console.error(`[Firebase] Lỗi giải mã Base64: ${error.message}`);
         return false;
     }
 
     for (let i = 0; i < retries; i++) {
         try {
-            let cleanedKey = serviceAccountKey.trim();
-
-            // FIX LỖI JSON PARSE:
-            // Khi dán JSON đã được thoát (escaped) vào biến môi trường (ví dụ: private_key có \\n), 
-            // chúng ta cần thay thế chuỗi '\\n' thành ký tự xuống dòng thực tế '\n'
-            // để Firebase Admin SDK có thể đọc đúng.
-            // Phương pháp này loại bỏ lỗi "Bad control character in string literal"
-            cleanedKey = cleanedKey.replace(/\\n/g, '\n');
-            
-            const serviceAccount = JSON.parse(cleanedKey);
+            // Parse JSON từ chuỗi đã giải mã
+            const serviceAccount = JSON.parse(serviceAccountJsonString);
 
             admin.initializeApp({
                 credential: admin.credential.cert(serviceAccount),

@@ -14,7 +14,7 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 
 dotenv.config();
 
-// --- BIẾN MÔI TRƯỜNG & CONFIG CHUNG (ĐÃ THÊM) ---
+// --- BIẾN MÔI TRƯỜNG & CONFIG CHUNG ---
 const isProduction = process.env.NODE_ENV === 'production';
 let firebaseAdminInitialized = false;
 let db;
@@ -48,24 +48,31 @@ app.set('trust proxy', 1);
 // --- HÀM HỖ TRỢ ---
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- HÀM KHỞI TẠO FIREBASE ADMIN SDK (FIX TRIỆT ĐỂ BẰNG BASE64) ---
+// --- HÀM KHỞI TẠO FIREBASE ADMIN SDK (FIX TRIỆT ĐỂ BẰNG BASE64 + BOM REMOVAL) ---
 async function initializeFirebaseWithRetries(retries = 5, delay = 5000) {
     if (firebaseAdminInitialized) return true;
 
     // Lấy biến môi trường Base64 mới
-    const serviceAccountKeyBase64 = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    const serviceAccountKeyBase64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
 
     if (!serviceAccountKeyBase64) {
-        console.error('LỖI CẤU HÌNH: Thiếu biến môi trường FIREBASE_SERVICE_ACCOUNT_KEY.');
+        console.error('LỖI CẤU HÌNH: Thiếu biến môi trường FIREBASE_SERVICE_ACCOUNT_BASE64.');
         return false;
     }
 
     let serviceAccountJsonString;
     try {
-        // FIX LỖI JSON PARSE: Giải mã Base64 trước khi parse JSON
+        // 1. Giải mã Base64
         const decodedBuffer = Buffer.from(serviceAccountKeyBase64, 'base64');
         serviceAccountJsonString = decodedBuffer.toString('utf8');
         console.log('✅ Đã giải mã Base64 thành công.');
+
+        // 2. PHÒNG VỆ: Loại bỏ BOM (Byte Order Mark) nếu có
+        // Ký tự BOM (0xFEFF) có thể gây lỗi JSON parse nếu nó nằm ở đầu chuỗi.
+        if (serviceAccountJsonString.charCodeAt(0) === 0xFEFF) {
+            serviceAccountJsonString = serviceAccountJsonString.substring(1);
+            console.warn("ĐÃ LOẠI BỎ BOM (Byte Order Mark) từ chuỗi JSON.");
+        }
 
     } catch (error) {
         console.error(`[Firebase] Lỗi giải mã Base64: ${error.message}`);
@@ -74,7 +81,7 @@ async function initializeFirebaseWithRetries(retries = 5, delay = 5000) {
 
     for (let i = 0; i < retries; i++) {
         try {
-            // Parse JSON từ chuỗi đã giải mã
+            // 3. Parse JSON từ chuỗi đã giải mã và làm sạch
             const serviceAccount = JSON.parse(serviceAccountJsonString);
 
             admin.initializeApp({
@@ -395,36 +402,4 @@ app.post('/admin/migrate-dictionary', verifyAdminToken, async (req, res) => {
       }
       
       const update = {};
-      if (typeof data.key !== 'string') update.key = typeof data.key === 'object' ? JSON.stringify(data.key) : String(data.key);
-      if (!hasValue) update.value = '';
-      else if (typeof data.value !== 'string') update.value = typeof data.value === 'object' ? JSON.stringify(data.value) : String(data.value);
-
-      if (Object.keys(update).length > 0) {
-        await db.collection('dictionary').doc(doc.id).update(update);
-        updated++;
-      }
-
-      if (processed % 200 === 0) await sleep(300);
-    }
-    return res.json({ success: true, updated, removed, totalProcessed: processed });
-  } catch (err) {
-    console.error('/admin/migrate-dictionary error', err && err.message ? err.message : err);
-    return res.status(500).json({ error: 'Lỗi khi migrate dictionary.' });
-  }
-});
-
-// --- BOOTSTRAP ---
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server Backend Doraemon đang chạy tại cổng ${PORT}`);
-  if (!firebaseAdminInitialized) console.warn('CẢNH BÁO: Firestore chưa được khởi tạo (đang chờ).');
-});
-
-// init firebase & start listener in background
-(async () => {
-  const ok = await initializeFirebaseWithRetries();
-  if (ok && firebaseAdminInitialized) {
-    // Tải từ điển ngay sau khi Firebase khởi tạo
-    await loadDictionary();
-  }
-})();
-
+      if (typeof data.key !== 'string') update.key = typeof data.
